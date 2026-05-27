@@ -23,10 +23,16 @@ import Text from "@shared/components/Text";
 import usePolicy from "~/hooks/usePolicy";
 
 function Collections() {
-  const { documents, auth, collections } = useStores();
+  const { documents, auth, collections, ui } = useStores();
   const { t } = useTranslation();
   const can = usePolicy(auth.team?.id);
-  const orderedCollections = collections.allActive;
+  const orderedCollections = useMemo(
+    () =>
+      ui.showHiddenCollections
+        ? collections.allActive
+        : collections.allActive.filter((c) => !c.hidden),
+    [collections.allActive, ui.showHiddenCollections]
+  );
 
   const params = useMemo(
     () => ({

@@ -183,6 +183,10 @@ allow(User, ["update", "export", "archive"], Collection, (user, collection) =>
   )
 );
 
+allow(User, ["hide", "unhide"], Collection, (user, collection) =>
+  and(!!collection, !!collection?.isActive, isTeamAdmin(user, collection))
+);
+
 allow(User, "delete", Collection, (user, collection) =>
   and(
     !!collection,

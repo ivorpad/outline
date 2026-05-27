@@ -53,6 +53,7 @@ export default async function presentCollection(
   if (!options.isPublic) {
     res.index = collection.index;
     res.sharing = collection.sharing;
+    res.hidden = collection.hidden;
     res.commenting = collection.commenting;
     res.templateManagement = collection.templateManagement;
     res.permission = collection.permission;

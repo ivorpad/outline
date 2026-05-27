@@ -37,6 +37,7 @@ type PersistedData = Pick<
   | "sidebarRightWidth"
   | "sidebarCollapsed"
   | "tocVisible"
+  | "showHiddenCollections"
 >;
 
 class UiStore {
@@ -79,6 +80,10 @@ class UiStore {
 
   @observable
   sidebarCollapsed = false;
+
+  // when true, hidden collections are shown in the sidebar
+  @observable
+  showHiddenCollections = false;
 
   @observable
   rightSidebar: "comments" | "history" | null = null;
@@ -136,6 +141,7 @@ class UiStore {
     const data: PersistedData = Storage.get(UI_STORE) || {};
     this.languagePromptDismissed = data.languagePromptDismissed;
     this.sidebarCollapsed = !!data.sidebarCollapsed;
+    this.showHiddenCollections = !!data.showHiddenCollections;
     this.sidebarWidth = data.sidebarWidth || defaultTheme.sidebarWidth;
     this.sidebarRightWidth =
       data.sidebarRightWidth || defaultTheme.sidebarRightWidth;
@@ -370,6 +376,11 @@ class UiStore {
   };
 
   @action
+  toggleShowHiddenCollections = () => {
+    this.set({ showHiddenCollections: !this.showHiddenCollections });
+  };
+
+  @action
   set = (data: Partial<PersistedData>) => {
     for (const key in data) {
       // @ts-expect-error doesn't understand PersistedData is subset of keys
@@ -465,6 +476,7 @@ class UiStore {
     return {
       tocVisible: this.tocVisible,
       sidebarCollapsed: this.sidebarCollapsed,
+      showHiddenCollections: this.showHiddenCollections,
       sidebarWidth: this.sidebarWidth,
       sidebarRightWidth: this.sidebarRightWidth,
       languagePromptDismissed: this.languagePromptDismissed,

@@ -184,6 +184,7 @@ export const CollectionsUpdateSchema = BaseSchema.extend({
       })
       .optional(),
     sharing: z.boolean().optional(),
+    hidden: z.boolean().optional(),
     commenting: z.boolean().nullish(),
     templateManagement: z
       .enum([CollectionPermission.Admin, CollectionPermission.ReadWrite])

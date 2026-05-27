@@ -584,6 +584,7 @@ router.post(
       color,
       sort,
       sharing,
+      hidden,
       commenting,
       templateManagement,
     } = ctx.input.body;
@@ -656,6 +657,11 @@ router.post(
     if (sharing !== undefined) {
       sharingChanged = sharing !== collection.sharing;
       collection.sharing = sharing;
+    }
+
+    if (hidden !== undefined && hidden !== collection.hidden) {
+      authorize(user, hidden ? "hide" : "unhide", collection);
+      collection.hidden = hidden;
     }
 
     if (sort !== undefined) {
