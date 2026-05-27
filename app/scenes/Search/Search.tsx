@@ -31,6 +31,7 @@ import type { PaginationParams, SearchResult } from "~/types";
 import { preventDefault } from "~/utils/events";
 import { searchPath } from "~/utils/routeHelpers";
 import { decodeURIComponentSafe } from "~/utils/urls";
+import AskAi from "./components/AskAi";
 import CollectionFilter from "./components/CollectionFilter";
 import DateFilter from "./components/DateFilter";
 import { DocumentFilter } from "./components/DocumentFilter";
@@ -46,6 +47,7 @@ function Search() {
   const { t } = useTranslation();
   const { documents, searches } = useStores();
   const isMobile = useMobile();
+  const [mode, setMode] = React.useState<"search" | "ask">("search");
 
   // routing
   const params = useQuery();
@@ -131,9 +133,16 @@ function Search() {
           offset: params?.offset,
           limit: params?.limit,
         };
-        return titleFilter
-          ? await documents.searchTitles({ ...filters, ...paginationParams })
-          : await documents.search({ ...filters, ...paginationParams });
+        if (titleFilter) {
+          return documents.searchTitles({ ...filters, ...paginationParams });
+        }
+        if (env.AI_ANSWERS_ENABLED && query) {
+          return documents.searchSemantic({
+            query,
+            limit: paginationParams.limit ?? Pagination.defaultLimit,
+          });
+        }
+        return documents.search({ ...filters, ...paginationParams });
       };
     }
 
@@ -254,20 +263,59 @@ function Search() {
       {loading && <LoadingIndicator />}
       <ResultsWrapper column auto>
         <form method="GET" action={searchPath()} onSubmit={preventDefault}>
-          <SearchInput
-            name="query"
-            key={query ? "search" : "recent"}
-            ref={searchInputRef}
-            placeholder={`${
-              documentId
-                ? t("Search in document")
-                : collectionId
-                  ? t("Search in collection")
-                  : t("Search")
-            }…`}
-            onKeyDown={handleKeyDown}
-            defaultValue={query ?? ""}
-          />
+          <HStack align="center" gap={8}>
+            <Flex auto>
+              <SearchInput
+                name="query"
+                key={query ? "search" : "recent"}
+                ref={searchInputRef}
+                placeholder={`${
+                  documentId
+                    ? t("Search in document")
+                    : collectionId
+                      ? t("Search in collection")
+                      : t("Search")
+                }…`}
+                onKeyDown={handleKeyDown}
+                defaultValue={query ?? ""}
+              />
+            </Flex>
+            {env.AI_ANSWERS_ENABLED && (
+              <ModePills role="tablist">
+                <ModePill
+                  type="button"
+                  $active={mode === "search"}
+                  onClick={() => setMode("search")}
+                  role="tab"
+                  aria-selected={mode === "search"}
+                >
+                  {t("Search")}
+                </ModePill>
+                <ModePill
+                  type="button"
+                  $active={mode === "ask"}
+                  onClick={() => setMode("ask")}
+                  role="tab"
+                  aria-selected={mode === "ask"}
+                >
+                  ✨ {t("Ask AI")}
+                </ModePill>
+              </ModePills>
+            )}
+          </HStack>
+          {env.AI_ANSWERS_ENABLED && mode === "search" && query && (
+            <AskCta
+              type="button"
+              onClick={() => setMode("ask")}
+            >
+              <Text weight="bold">
+                {t("Ask about")} <Text as="span" type="secondary">{query}</Text>
+              </Text>
+              <Text type="secondary" size="small">
+                {t("Start conversation")} ↵
+              </Text>
+            </AskCta>
+          )}
           <Filters>
             <Flex align="center" gap={4} wrap>
               {filterVisibility.document && (
@@ -322,7 +370,9 @@ function Search() {
             {isMobile ? null : sortInput}
           </Filters>
         </form>
-        {isSearchable ? (
+        {mode === "ask" && query ? (
+          <AskAi query={query} />
+        ) : isSearchable ? (
           <>
             {error ? (
               <Fade>
@@ -422,6 +472,50 @@ const SearchTitlesFilter = styled(Switch)`
   font-size: 14px;
   font-weight: 400;
   height: 28px;
+`;
+
+const ModePills = styled.div`
+  display: inline-flex;
+  background: ${(props) => props.theme.backgroundTertiary};
+  border-radius: 999px;
+  padding: 2px;
+  gap: 2px;
+`;
+
+const ModePill = styled.button<{ $active: boolean }>`
+  border: 0;
+  cursor: pointer;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  color: ${(props) =>
+    props.$active ? props.theme.text : props.theme.textSecondary};
+  background: ${(props) =>
+    props.$active ? props.theme.background : "transparent"};
+  box-shadow: ${(props) =>
+    props.$active ? "0 1px 2px rgba(0,0,0,0.08)" : "none"};
+  transition: background 100ms ease, color 100ms ease;
+  &:hover {
+    color: ${(props) => props.theme.text};
+  }
+`;
+
+const AskCta = styled.button`
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  margin: 12px 0;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid ${(props) => props.theme.divider};
+  background: ${(props) => props.theme.backgroundSecondary};
+  cursor: pointer;
+  text-align: left;
+  &:hover {
+    background: ${(props) => props.theme.listItemHoverBackground};
+  }
 `;
 
 export default observer(Search);

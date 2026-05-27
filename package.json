@@ -78,6 +78,7 @@
     "@hocuspocus/provider": "1.1.3",
     "@hocuspocus/server": "1.1.3",
     "@juggle/resize-observer": "^3.4.0",
+    "@langchain/core": "^1.1.48",
     "@linear/sdk": "^58.1.0",
     "@mermaid-js/layout-elk": "^0.2.1",
     "@modelcontextprotocol/sdk": "^1.25.3",

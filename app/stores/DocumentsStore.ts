@@ -428,6 +428,32 @@ export default class DocumentsStore extends Store<Document> {
   };
 
   @action
+  searchSemantic = async (options: {
+    query: string;
+    limit?: number;
+  }): Promise<SearchResult[]> => {
+    const res = await client.post("/aiAnswers.search", options);
+    invariant(res?.data, "Semantic search response should be available");
+    runInAction("DocumentsStore#searchSemantic", () => {
+      res.data.forEach((result: SearchResult) => this.add(result.document));
+      this.addPolicies(res.policies);
+    });
+    return compact(
+      res.data.map((result: SearchResult) => {
+        const document = this.data.get(result.document.id);
+        if (!document) {
+          return null;
+        }
+        return {
+          id: document.id,
+          ranking: result.ranking,
+          context: result.context,
+          document,
+        };
+      })
+    );
+  };
+
   search = async (options: SearchParams): Promise<SearchResult[]> => {
     const compactedOptions = omitBy(options, (o) => !o);
     const res = await client.post("/documents.search", {
