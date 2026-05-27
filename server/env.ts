@@ -222,6 +222,42 @@ export class Environment {
     10
   );
 
+  /** VectorAI DB base URL (REST), e.g. http://vectorai:6573 — required for AI answers. */
+  public VECTORAI_URL = environment.VECTORAI_URL;
+
+  /** Admin password for VectorAI DB. Used to mint short-lived bearer tokens. */
+  public VECTORAI_PASSWORD = environment.VECTORAI_PASSWORD;
+
+  /** Collection name in VectorAI used to store document chunks. */
+  public VECTORAI_COLLECTION =
+    environment.VECTORAI_COLLECTION || "outline_documents";
+
+  /** Base URL of a LiteLLM-compatible proxy, e.g. https://llm.ivor.dev. */
+  public LITELLM_URL = environment.LITELLM_URL;
+
+  /** Bearer key for the LiteLLM proxy. */
+  public LITELLM_API_KEY = environment.LITELLM_API_KEY;
+
+  /** Embedding model alias on the LiteLLM proxy. */
+  public AI_EMBEDDING_MODEL =
+    environment.AI_EMBEDDING_MODEL || "gemini-embedding-2";
+
+  /** Vector dimension expected from the chosen embedding model. */
+  @IsNumber()
+  public AI_EMBEDDING_DIM = parseInt(
+    environment.AI_EMBEDDING_DIM || "3072",
+    10
+  );
+
+  /** Chat model alias used to synthesize answers from retrieved chunks. */
+  public AI_ANSWER_MODEL =
+    environment.AI_ANSWER_MODEL || "claude-sonnet-4-6";
+
+  /** Whether AI answers + indexing is enabled. */
+  @Public
+  public AI_ANSWERS_ENABLED =
+    this.toBoolean(environment.AI_ANSWERS_ENABLED ?? "false");
+
   /**
    * The fully qualified, external facing domain name of the server.
    * If not set, will be derived from HEROKU_APP_NAME for Heroku deployments.
