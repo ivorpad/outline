@@ -17,7 +17,7 @@ import Tooltip from "~/components/Tooltip";
 import CopyToClipboard from "~/components/CopyToClipboard";
 import NudeButton from "~/components/NudeButton";
 import { client } from "~/utils/ApiClient";
-import { useTheme } from "styled-components";
+import styled, { useTheme } from "styled-components";
 
 function Features() {
   const { t } = useTranslation();
@@ -155,9 +155,56 @@ function Features() {
   );
 }
 
+type AiStatus = {
+  enabled: boolean;
+  total: number;
+  indexed: number;
+  pending: number;
+};
+
+const ProgressTrack = styled.div`
+  width: 240px;
+  height: 6px;
+  border-radius: 3px;
+  background: ${(props) => props.theme.divider};
+  overflow: hidden;
+`;
+
+const ProgressBar = styled.div`
+  height: 100%;
+  background: ${(props) => props.theme.accent};
+  transition: width 300ms ease;
+`;
+
 function ReindexButton() {
   const { t } = useTranslation();
   const [busy, setBusy] = React.useState(false);
+  const [status, setStatus] = React.useState<AiStatus | null>(null);
+
+  const fetchStatus = React.useCallback(async () => {
+    try {
+      const data = (await client.post("/aiAnswers.status", {})) as AiStatus;
+      setStatus(data);
+      return data;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  React.useEffect(() => {
+    void fetchStatus();
+  }, [fetchStatus]);
+
+  React.useEffect(() => {
+    if (!status?.pending) {
+      return;
+    }
+    const id = setInterval(() => {
+      void fetchStatus();
+    }, 4000);
+    return () => clearInterval(id);
+  }, [status?.pending, fetchStatus]);
+
   const trigger = React.useCallback(
     async (force: boolean) => {
       setBusy(true);
@@ -178,36 +225,56 @@ function ReindexButton() {
                 count: data.queued ?? 0,
               })
         );
+        void fetchStatus();
       } catch (err) {
         toast.error((err as Error).message);
       } finally {
         setBusy(false);
       }
     },
-    [t]
+    [t, fetchStatus]
   );
+
+  const pct =
+    status && status.total > 0
+      ? Math.round((status.indexed / status.total) * 100)
+      : 0;
+
   return (
-    <Flex gap={8} align="center">
-      <NudeButton
-        onClick={() => trigger(false)}
-        disabled={busy}
-        width="auto"
-        height="auto"
-      >
-        <Text type="secondary">
-          {busy ? t("Indexing…") : t("Re-index changed")}
-        </Text>
-      </NudeButton>
-      <NudeButton
-        onClick={() => trigger(true)}
-        disabled={busy}
-        width="auto"
-        height="auto"
-      >
-        <Text type="tertiary" size="small">
-          {t("Force all")}
-        </Text>
-      </NudeButton>
+    <Flex column gap={6}>
+      <Flex gap={8} align="center">
+        <NudeButton
+          onClick={() => trigger(false)}
+          disabled={busy}
+          width="auto"
+          height="auto"
+        >
+          <Text type="secondary">
+            {busy ? t("Indexing…") : t("Re-index changed")}
+          </Text>
+        </NudeButton>
+        <NudeButton
+          onClick={() => trigger(true)}
+          disabled={busy}
+          width="auto"
+          height="auto"
+        >
+          <Text type="tertiary" size="small">
+            {t("Force all")}
+          </Text>
+        </NudeButton>
+      </Flex>
+      {status && (
+        <Flex column gap={2}>
+          <Text type="tertiary" size="small">
+            {t("Indexed")}: {status.indexed} / {status.total} ({pct}%)
+            {status.pending > 0 ? ` · ${status.pending} pending` : ""}
+          </Text>
+          <ProgressTrack>
+            <ProgressBar style={{ width: `${pct}%` }} />
+          </ProgressTrack>
+        </Flex>
+      )}
     </Flex>
   );
 }
