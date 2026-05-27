@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { Document as LCDocument } from "@langchain/core/documents";
 import { BaseRetriever } from "@langchain/core/retrievers";
+import { MarkdownTextSplitter } from "@langchain/textsplitters";
 import { Node } from "prosemirror-model";
 import env from "@server/env";
 import Logger from "@server/logging/Logger";
@@ -10,53 +11,12 @@ import { Document } from "@server/models";
 const TOKEN_TO_CHAR_RATIO = 4;
 const CHUNK_SIZE = 800 * TOKEN_TO_CHAR_RATIO;
 const CHUNK_OVERLAP = 150 * TOKEN_TO_CHAR_RATIO;
-const SEPARATORS = ["\n## ", "\n# ", "\n### ", "\n\n", "\n", " ", ""];
+const EMBED_BATCH_SIZE = 96;
 
-/**
- * Recursive markdown-aware splitter. Walks SEPARATORS in order, splitting the
- * largest pieces first, then recursing on chunks still larger than CHUNK_SIZE.
- * Final pass re-stitches small pieces back together up to CHUNK_SIZE with
- * CHUNK_OVERLAP characters carried into the next chunk.
- */
-function splitText(text: string): string[] {
-  function recurse(input: string, seps: string[]): string[] {
-    if (input.length <= CHUNK_SIZE) {
-      return [input];
-    }
-    const [head, ...rest] = seps.length ? seps : [""];
-    const parts = head === "" ? [...input] : input.split(head);
-    const out: string[] = [];
-    for (const raw of parts) {
-      const piece = head && out.length ? head + raw : raw;
-      if (piece.length <= CHUNK_SIZE) {
-        out.push(piece);
-      } else {
-        out.push(...recurse(piece, rest));
-      }
-    }
-    return out;
-  }
-
-  const fragments = recurse(text, SEPARATORS).filter((f) => f.trim().length);
-  const chunks: string[] = [];
-  let buf = "";
-  for (const f of fragments) {
-    if ((buf + f).length <= CHUNK_SIZE) {
-      buf += f;
-      continue;
-    }
-    if (buf) {
-      chunks.push(buf);
-      buf = buf.slice(-CHUNK_OVERLAP) + f;
-    } else {
-      buf = f;
-    }
-  }
-  if (buf.trim().length) {
-    chunks.push(buf);
-  }
-  return chunks;
-}
+const splitter = new MarkdownTextSplitter({
+  chunkSize: CHUNK_SIZE,
+  chunkOverlap: CHUNK_OVERLAP,
+});
 
 let cachedToken: { value: string; expiresAt: number } | null = null;
 
@@ -124,7 +84,7 @@ export async function ensureCollection(): Promise<void> {
   Logger.info("ai", `Created VectorAI collection ${name}`);
 }
 
-async function embed(input: string[]): Promise<number[][]> {
+async function embedBatch(input: string[]): Promise<number[][]> {
   if (!env.LITELLM_URL || !env.LITELLM_API_KEY) {
     throw new Error("LITELLM_URL or LITELLM_API_KEY not configured");
   }
@@ -141,6 +101,16 @@ async function embed(input: string[]): Promise<number[][]> {
   }
   const data = (await res.json()) as { data: { embedding: number[] }[] };
   return data.data.map((d) => d.embedding);
+}
+
+async function embed(input: string[]): Promise<number[][]> {
+  const out: number[][] = [];
+  for (let i = 0; i < input.length; i += EMBED_BATCH_SIZE) {
+    const slice = input.slice(i, i + EMBED_BATCH_SIZE);
+    const vectors = await embedBatch(slice);
+    out.push(...vectors);
+  }
+  return out;
 }
 
 function pointId(documentId: string, chunkIndex: number): string {
@@ -169,7 +139,7 @@ export async function indexDocument(documentId: string): Promise<number> {
   const node = Node.fromJSON(schema, document.content);
   const markdown = `# ${document.title}\n\n${serializer.serialize(node)}`;
 
-  const chunks = splitText(markdown);
+  const chunks = await splitter.splitText(markdown);
   if (chunks.length === 0) {
     return 0;
   }

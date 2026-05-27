@@ -216,4 +216,44 @@ router.post(
   }
 );
 
+router.post(
+  "aiAnswers.status",
+  auth(),
+  validate(T.AiAnswersStatusSchema),
+  async (ctx: APIContext<T.AiAnswersStatusReq>) => {
+    const { user } = ctx.state.auth;
+    const baseWhere = {
+      teamId: user.teamId,
+      publishedAt: { [Op.ne]: null },
+      archivedAt: null,
+      deletedAt: null,
+    };
+    const [total, indexed, stale] = await Promise.all([
+      Document.count({ where: baseWhere }),
+      Document.count({
+        where: {
+          ...baseWhere,
+          [Op.and]: literal(
+            '("document"."aiIndexedAt" IS NOT NULL AND "document"."aiIndexedAt" >= "document"."updatedAt")'
+          ),
+        },
+      }),
+      Document.count({
+        where: {
+          ...baseWhere,
+          [Op.and]: literal(
+            '("document"."aiIndexedAt" IS NULL OR "document"."aiIndexedAt" < "document"."updatedAt")'
+          ),
+        },
+      }),
+    ]);
+    ctx.body = {
+      enabled: env.AI_ANSWERS_ENABLED,
+      total,
+      indexed,
+      pending: stale,
+    };
+  }
+);
+
 export default router;
