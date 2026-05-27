@@ -274,6 +274,14 @@ const embeds: EmbedDescriptor[] = [
       ]
     : []),
   new EmbedDescriptor({
+    id: "excalidraw",
+    title: "Excalidraw",
+    keywords: "draw whiteboard diagram sketch",
+    regexMatch: [/^https:\/\/excalidraw\.com\/#(?:room|json)=.+$/],
+    transformMatch: (matches: RegExpMatchArray) => matches[0],
+    icon: <Img src="/images/excalidraw.png" alt="Excalidraw" $invertable />,
+  }),
+  new EmbedDescriptor({
     id: "figma",
     title: "Figma",
     keywords: "design svg vector",
