@@ -28,3 +28,9 @@ export const AiAnswersSearchSchema = BaseSchema.extend({
 });
 
 export type AiAnswersSearchReq = z.infer<typeof AiAnswersSearchSchema>;
+
+export const AiAnswersStatusSchema = BaseSchema.extend({
+  body: z.object({}).optional(),
+});
+
+export type AiAnswersStatusReq = z.infer<typeof AiAnswersStatusSchema>;
