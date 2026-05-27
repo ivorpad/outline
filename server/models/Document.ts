@@ -389,6 +389,11 @@ class Document extends ArchivableModel<
   @Column
   publishedAt: Date | null;
 
+  /** Last time chunks for this document were upserted to the AI vector store. */
+  @IsDate
+  @Column
+  aiIndexedAt: Date | null;
+
   /** An array of user IDs that have edited this document. */
   @Column(DataType.ARRAY(DataType.UUID))
   collaboratorIds: string[] = [];

@@ -5,6 +5,7 @@ import { useTranslation, Trans } from "react-i18next";
 import { toast } from "sonner";
 import { TeamPreference } from "@shared/types";
 import { TeamValidation } from "@shared/validations";
+import Flex from "~/components/Flex";
 import Heading from "~/components/Heading";
 import Scene from "~/components/Scene";
 import Switch from "~/components/Switch";
@@ -15,6 +16,7 @@ import Input from "~/components/Input";
 import Tooltip from "~/components/Tooltip";
 import CopyToClipboard from "~/components/CopyToClipboard";
 import NudeButton from "~/components/NudeButton";
+import { client } from "~/utils/ApiClient";
 import { useTheme } from "styled-components";
 
 function Features() {
@@ -143,13 +145,70 @@ function Features() {
         name="answers"
         label={t("AI answers")}
         description={t(
-          "Use AI to get direct answers to questions in search. This feature requires a paid license."
+          "Index this workspace's documents and use AI to answer questions in search. Powered by LiteLLM + VectorAI on this fork."
         )}
         border={false}
       >
-        <Switch disabled />
+        <ReindexButton />
       </SettingRow>
     </Scene>
+  );
+}
+
+function ReindexButton() {
+  const { t } = useTranslation();
+  const [busy, setBusy] = React.useState(false);
+  const trigger = React.useCallback(
+    async (force: boolean) => {
+      setBusy(true);
+      try {
+        const data = (await client.post("/aiAnswers.reindex", { force })) as {
+          queued?: number;
+          skipped?: number;
+          total?: number;
+        };
+        const skipped = data.skipped ?? 0;
+        toast.success(
+          skipped > 0 && !force
+            ? t(
+                "Queued {{queued}} docs (skipped {{skipped}} already up-to-date)",
+                { queued: data.queued ?? 0, skipped }
+              )
+            : t("Queued {{count}} documents for indexing", {
+                count: data.queued ?? 0,
+              })
+        );
+      } catch (err) {
+        toast.error((err as Error).message);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [t]
+  );
+  return (
+    <Flex gap={8} align="center">
+      <NudeButton
+        onClick={() => trigger(false)}
+        disabled={busy}
+        width="auto"
+        height="auto"
+      >
+        <Text type="secondary">
+          {busy ? t("Indexing…") : t("Re-index changed")}
+        </Text>
+      </NudeButton>
+      <NudeButton
+        onClick={() => trigger(true)}
+        disabled={busy}
+        width="auto"
+        height="auto"
+      >
+        <Text type="tertiary" size="small">
+          {t("Force all")}
+        </Text>
+      </NudeButton>
+    </Flex>
   );
 }
 
