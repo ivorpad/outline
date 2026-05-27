@@ -54,6 +54,11 @@ export default class Collection extends ParanoidModel {
   @observable
   sharing: boolean;
 
+  /** Whether the collection is hidden from the sidebar by default. Admins toggle this. */
+  @Field
+  @observable
+  hidden: boolean;
+
   /** The sort index for the collection. */
   @Field
   @observable

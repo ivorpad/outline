@@ -340,6 +340,65 @@ export const unstarCollection = createAction({
   },
 });
 
+export const hideCollection = createAction({
+  name: ({ t }) => t("Hide"),
+  analyticsName: "Hide collection",
+  section: ActiveCollectionSection,
+  icon: <PadlockIcon />,
+  keywords: "conceal stash",
+  visible: ({ getActiveModel, stores }) => {
+    const collection = getActiveModel(Collection);
+    if (!collection) {
+      return false;
+    }
+    return !collection.hidden && stores.policies.abilities(collection.id).hide;
+  },
+  perform: async ({ getActiveModel }) => {
+    const collection = getActiveModel(Collection);
+    if (!collection) {
+      return;
+    }
+    await collection.save({ hidden: true });
+  },
+});
+
+export const unhideCollection = createAction({
+  name: ({ t }) => t("Unhide"),
+  analyticsName: "Unhide collection",
+  section: ActiveCollectionSection,
+  icon: <PadlockIcon />,
+  keywords: "show reveal",
+  visible: ({ getActiveModel, stores }) => {
+    const collection = getActiveModel(Collection);
+    if (!collection) {
+      return false;
+    }
+    return collection.hidden && stores.policies.abilities(collection.id).unhide;
+  },
+  perform: async ({ getActiveModel }) => {
+    const collection = getActiveModel(Collection);
+    if (!collection) {
+      return;
+    }
+    await collection.save({ hidden: false });
+  },
+});
+
+export const toggleShowHiddenCollections = createAction({
+  name: ({ t, stores }) =>
+    stores.ui.showHiddenCollections ? t("Hide hidden collections") : t("Show hidden collections"),
+  analyticsName: "Toggle hidden collections visibility",
+  section: CollectionSection,
+  icon: <PadlockIcon />,
+  shortcut: ["Meta+Shift+H"],
+  keywords: "hidden visibility toggle",
+  visible: ({ stores }) =>
+    stores.collections.orderedData.some((c) => c.hidden),
+  perform: ({ stores }) => {
+    stores.ui.toggleShowHiddenCollections();
+  },
+});
+
 export const subscribeCollection = createAction({
   name: ({ t }) => t("Subscribe"),
   analyticsName: "Subscribe to collection",
@@ -541,6 +600,9 @@ export const rootCollectionActions = [
   createCollection,
   starCollection,
   unstarCollection,
+  hideCollection,
+  unhideCollection,
+  toggleShowHiddenCollections,
   subscribeCollection,
   unsubscribeCollection,
   deleteCollection,

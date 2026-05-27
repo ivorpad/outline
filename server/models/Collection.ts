@@ -271,6 +271,10 @@ class Collection extends ParanoidModel<
   @Column
   sharing: boolean;
 
+  @Default(false)
+  @Column
+  hidden: boolean;
+
   @Default({ field: "title", direction: "asc" })
   @Column({
     type: DataType.JSONB,
