@@ -6,21 +6,21 @@ import { toast } from "sonner";
 import styled from "styled-components";
 import { richExtensions } from "@shared/editor/nodes";
 import { s } from "@shared/styles";
-import { ProsemirrorHelper } from "@shared/utils/ProsemirrorHelper";
+import { ProsemirrorDataHelper } from "@shared/utils/ProsemirrorDataHelper";
 import { CollectionValidation } from "@shared/validations";
 import type Collection from "~/models/Collection";
 import type Document from "~/models/Document";
 import Editor from "~/components/Editor";
 import LoadingIndicator from "~/components/LoadingIndicator";
 import Text from "~/components/Text";
-import { MeasuredContainer } from "~/components/MeasuredContainer";
 import { withUIExtensions } from "~/editor/extensions";
 import useCurrentUser from "~/hooks/useCurrentUser";
 import usePolicy from "~/hooks/usePolicy";
 import useStores from "~/hooks/useStores";
 import type { Properties } from "~/types";
+import CodeWordBreak from "@shared/editor/extensions/CodeWordBreak";
 
-const extensions = withUIExtensions(richExtensions);
+const extensions = [CodeWordBreak, ...withUIExtensions(richExtensions)];
 
 type Props = {
   collection: Collection;
@@ -71,7 +71,7 @@ function Overview({ collection, readOnly }: Props) {
       const newDocument = await documents.create(
         {
           collectionId: collection.id,
-          data: ProsemirrorHelper.getEmptyDocument(),
+          data: ProsemirrorDataHelper.getEmpty(),
           ...params,
         },
         {
@@ -89,7 +89,7 @@ function Overview({ collection, readOnly }: Props) {
       {collections.isSaving && <LoadingIndicator />}
       {(can.update || readOnly) && (
         <Suspense fallback={<Placeholder>Loading…</Placeholder>}>
-          <MeasuredContainer name="document">
+          <div>
             <Editor
               defaultValue={collection.data}
               onChange={handleSave}
@@ -103,7 +103,7 @@ function Overview({ collection, readOnly }: Props) {
               editorStyle={editorStyle}
             />
             <div ref={childRef} />
-          </MeasuredContainer>
+          </div>
         </Suspense>
       )}
     </>

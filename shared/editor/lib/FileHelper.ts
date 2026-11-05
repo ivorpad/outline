@@ -27,6 +27,23 @@ export default class FileHelper {
   }
 
   /**
+   * Returns the file with a content type guessed from its extension when the
+   * platform did not report one.
+   *
+   * @param file The file to check.
+   * @returns The original file, or a copy with the guessed content type.
+   */
+  static withContentType(file: File): File {
+    if (file.type) {
+      return file;
+    }
+
+    const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+    const type = FileHelper.videoContentTypes[extension];
+    return type ? new File([file], file.name, { type }) : file;
+  }
+
+  /**
    * Checks if a file is an audio file.
    *
    * @param contentType The content type of the file
@@ -64,15 +81,31 @@ export default class FileHelper {
   }
 
   /**
+   * Loads an image, so that an image element with the same source displays it
+   * without delay.
+   *
+   * @param src The source URL of the image.
+   * @returns A promise that resolves when the image loads or fails to load.
+   */
+  static loadImage(src: string): Promise<void> {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => resolve();
+      img.onerror = () => resolve();
+      img.src = src;
+    });
+  }
+
+  /**
    * Loads the dimensions of a video file.
    *
    * @param file The file to load the dimensions for
-   * @returns The dimensions of the video
+   * @returns The dimensions of the video, if known.
    */
   static getVideoDimensions(
     file: File
-  ): Promise<{ width: number; height: number }> {
-    return new Promise((resolve, reject) => {
+  ): Promise<{ width: number; height: number } | undefined> {
+    return new Promise((resolve) => {
       const video = document.createElement("video");
       video.preload = "metadata";
       video.crossOrigin = "anonymous";
@@ -80,7 +113,12 @@ export default class FileHelper {
         window.URL.revokeObjectURL(video.src);
         resolve({ width: video.videoWidth, height: video.videoHeight });
       };
-      video.onerror = reject;
+      video.onerror = () => {
+        window.URL.revokeObjectURL(video.src);
+        // oxlint-disable-next-line no-console
+        console.warn("Failed to load video for dimensions");
+        resolve(undefined);
+      };
       video.src = URL.createObjectURL(file);
     });
   }
@@ -147,14 +185,19 @@ export default class FileHelper {
       }
     }
 
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       const img = new Image();
       img.onload = function () {
         window.URL.revokeObjectURL(img.src);
         resolve({ width: img.width, height: img.height });
       };
 
-      img.onerror = reject;
+      img.onerror = () => {
+        window.URL.revokeObjectURL(img.src);
+        // oxlint-disable-next-line no-console
+        console.warn("Failed to load image for dimensions");
+        resolve(undefined);
+      };
       img.src = URL.createObjectURL(file);
     });
   }
@@ -303,7 +346,7 @@ export default class FileHelper {
               if (compressionMethod === 0) {
                 // 0 = deflate compression
                 const compressed = data.slice(nullIndex + 2);
-                textContent = inflate(compressed, { to: "string" });
+                textContent = inflate(compressed, { toText: true });
               } else {
                 continue; // Unsupported compression method
               }
@@ -339,7 +382,7 @@ export default class FileHelper {
                 }
                 pos++; // Skip null after translated keyword
                 const compressed = data.slice(pos);
-                textContent = inflate(compressed, { to: "string" });
+                textContent = inflate(compressed, { toText: true });
               } else {
                 continue; // Invalid compression flag
               }
@@ -418,4 +461,12 @@ export default class FileHelper {
 
     return new File([bytes], filename, { type: mimeType });
   }
+
+  private static videoContentTypes: Record<string, string> = {
+    m4v: "video/mp4",
+    mov: "video/quicktime",
+    mp4: "video/mp4",
+    ogv: "video/ogg",
+    webm: "video/webm",
+  };
 }

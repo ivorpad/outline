@@ -1,6 +1,7 @@
 import { Minute } from "@shared/utils/time";
 import { Hook, PluginManager } from "@server/utils/PluginManager";
 import config from "../plugin.json";
+import { LinearUtils } from "../shared/LinearUtils";
 import router from "./api/linear";
 import env from "./env";
 import { Linear } from "./linear";
@@ -22,7 +23,12 @@ if (enabled) {
     },
     {
       type: Hook.UnfurlProvider,
+      name: "Linear",
       value: { unfurl: Linear.unfurl, cacheExpiry: Minute.seconds },
+    },
+    {
+      type: Hook.MentionProvider,
+      value: (url: URL) => LinearUtils.mentionType(url),
     },
     {
       type: Hook.Uninstall,

@@ -6,6 +6,7 @@ import Button from "~/components/Button";
 import Tooltip from "~/components/Tooltip";
 import useCurrentTeam from "~/hooks/useCurrentTeam";
 import usePolicy from "~/hooks/usePolicy";
+import { preloadEditor } from "~/routes/scenes";
 import { newDocumentPath } from "~/utils/routeHelpers";
 
 function NewDocumentMenu() {
@@ -18,8 +19,14 @@ function NewDocumentMenu() {
   }
 
   return (
-    <Tooltip content={t("New document")} shortcut="n" placement="bottom">
-      <Button as={Link} to={newDocumentPath()} icon={<PlusIcon />}>
+    <Tooltip content={t("New document")} shortcut="n" side="bottom">
+      <Button
+        as={Link}
+        to={newDocumentPath()}
+        icon={<PlusIcon />}
+        onPointerEnter={preloadEditor}
+        onFocus={preloadEditor}
+      >
         {t("New doc")}
       </Button>
     </Tooltip>

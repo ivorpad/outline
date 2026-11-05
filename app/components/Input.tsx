@@ -2,7 +2,8 @@ import * as VisuallyHidden from "@radix-ui/react-visually-hidden";
 import * as React from "react";
 import { mergeRefs } from "react-merge-refs";
 import styled from "styled-components";
-import breakpoint from "styled-components-breakpoint";
+import { breakpoint } from "@shared/styles/breakpoint";
+import { MOBILE_TOUCH_TARGET } from "@shared/constants";
 import { s, ellipsis } from "@shared/styles";
 import Flex from "~/components/Flex";
 import Text from "~/components/Text";
@@ -75,6 +76,7 @@ export const NativeInput = styled.input<{
 
   ${breakpoint("mobile", "tablet")`
     font-size: 16px;
+    height: ${MOBILE_TOUCH_TARGET - 2}px;
   `};
 `;
 
@@ -121,6 +123,11 @@ export const Outline = styled(Flex)<{
         : props.theme.inputBorder};
   border-radius: ${(props) => (props.$round ? "16px" : "4px")};
   font-weight: normal;
+
+  ${breakpoint("mobile", "tablet")`
+    ${(props: { $round?: boolean }) =>
+      props.$round && `border-radius: ${MOBILE_TOUCH_TARGET / 2}px;`}
+  `};
   align-items: center;
   overflow: hidden;
   background: ${s("background")};
@@ -192,10 +199,12 @@ export interface Props extends Omit<
 }
 
 function Input(
-  props: Props,
-  ref: React.RefObject<HTMLInputElement | HTMLTextAreaElement>
+  props: Props & { ref?: React.Ref<HTMLInputElement | HTMLTextAreaElement> }
 ) {
-  const internalRef = React.useRef<HTMLInputElement | HTMLTextAreaElement>();
+  const internalRef = React.useRef<
+    HTMLInputElement | HTMLTextAreaElement | null
+  >(null);
+  const generatedId = React.useId();
   const [focused, setFocused] = React.useState(false);
   const [charCount, setCharCount] = React.useState(() => {
     if (typeof props.value === "string") {
@@ -282,6 +291,8 @@ function Input(
     onChange,
     onRequestSubmit,
     children,
+    ref,
+    id = generatedId,
     ...rest
   } = props;
 
@@ -296,9 +307,19 @@ function Input(
 
   const wrappedLabel = <LabelText>{label}</LabelText>;
 
+  // Ensure the control always has an accessible name. When no visible or
+  // visually-hidden label is provided, fall back to the placeholder text so
+  // that screen readers announce a persistent name for the field. A caller
+  // supplied aria-label/aria-labelledby (spread via rest) still takes
+  // precedence over this fallback.
+  const fallbackAriaLabel =
+    !label && typeof props.placeholder === "string"
+      ? props.placeholder
+      : undefined;
+
   return (
     <Wrapper className={className} short={short} flex={flex}>
-      <label>
+      <label htmlFor={id}>
         {label &&
           (labelHidden ? (
             <VisuallyHidden.Root>{wrappedLabel}</VisuallyHidden.Root>
@@ -311,8 +332,8 @@ function Input(
           {type === "textarea" ? (
             <NativeTextarea
               ref={mergeRefs([
-                internalRef,
-                ref as React.RefObject<HTMLTextAreaElement>,
+                internalRef as React.Ref<HTMLTextAreaElement>,
+                ref as React.Ref<HTMLTextAreaElement>,
               ])}
               onBlur={handleBlur}
               onFocus={handleFocus}
@@ -321,7 +342,9 @@ function Input(
               $autoSize={autoSize}
               $minHeight={minHeight}
               $maxHeight={maxHeight}
+              aria-label={fallbackAriaLabel}
               {...rest}
+              id={id}
               // set it after "rest" to override props from spread.
               maxLength={maxLength}
               onKeyDown={handleKeyDown}
@@ -330,15 +353,17 @@ function Input(
           ) : (
             <NativeInput
               ref={mergeRefs([
-                internalRef,
-                ref as React.RefObject<HTMLInputElement>,
+                internalRef as React.Ref<HTMLInputElement>,
+                ref as React.Ref<HTMLInputElement>,
               ])}
               onBlur={handleBlur}
               onFocus={handleFocus}
               hasIcon={!!icon}
               hasPrefix={!!prefix}
               type={type}
+              aria-label={fallbackAriaLabel}
               {...rest}
+              id={id}
               // set it after "rest" to override "onKeyDown" and "onChange" from prop.
               maxLength={maxLength}
               onKeyDown={handleKeyDown}
@@ -372,4 +397,4 @@ export const TextWrapper = styled.span`
   margin-top: -16px;
 `;
 
-export default React.forwardRef(Input);
+export default Input;

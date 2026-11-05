@@ -1,4 +1,4 @@
-import Router from "koa-router";
+import Router from "@koa/router";
 import { compact, isEmpty } from "es-toolkit/compat";
 import { Op, Sequelize, type WhereOptions } from "sequelize";
 import { UserRole } from "@shared/types";
@@ -12,6 +12,7 @@ import pagination, {
 } from "@server/routes/api/middlewares/pagination";
 import type { APIContext } from "@server/types";
 import { AuthenticationType } from "@server/types";
+import { QueryHelper } from "@server/storage/QueryHelper";
 import presentWebhookSubscription from "../presenters/webhookSubscription";
 import * as T from "./schema";
 
@@ -43,7 +44,7 @@ router.post(
       };
     }
 
-    const replacements = { query: `%${query}%` };
+    const replacements = { query: QueryHelper.likeContains(query ?? "") };
 
     const { results, pagination } = await paginateQuery(
       ctx,
@@ -64,7 +65,6 @@ router.post(
       () =>
         WebhookSubscription.count({
           where,
-          // @ts-expect-error Types are incorrect for count
           replacements,
         }) as unknown as Promise<number>
     );

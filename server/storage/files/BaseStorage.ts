@@ -1,12 +1,16 @@
 import type { Blob } from "node:buffer";
 import type { Readable } from "node:stream";
+import { buffer } from "node:stream/consumers";
 import type { PresignedPost } from "@aws-sdk/s3-presigned-post";
+import contentDisposition from "content-disposition";
 import { omit } from "es-toolkit/compat";
+import { toError, errToString } from "@shared/utils/error";
 import FileHelper from "@shared/editor/lib/FileHelper";
 import { isBase64Url, isInternalUrl } from "@shared/utils/urls";
-import { Week } from "@shared/utils/time";
+import { Minute, Week } from "@shared/utils/time";
 import env from "@server/env";
 import Logger from "@server/logging/Logger";
+import { ImageHelper } from "@server/models/helpers/ImageHelper";
 import type { RequestInit } from "@server/utils/fetch";
 import fetch, { chromeUserAgent, Headers } from "@server/utils/fetch";
 import type { AppContext } from "@server/types";
@@ -22,6 +26,51 @@ export default abstract class BaseStorage {
   public static maxSignedUrlExpires = Week.seconds;
 
   /**
+   * The longest period over which the signing timestamp is held constant. See
+   * `getSigningDate` for why this matters.
+   */
+  public static maxSigningWindow = 15 * Minute.seconds;
+
+  /**
+   * Returns the number of seconds that a signed URL is always valid for, after
+   * signing time alignment. Use this as the upper limit when a response that
+   * points to a signed URL is cached.
+   *
+   * @param expiresIn The number of seconds until the signed URL expires.
+   * @returns The minimum number of seconds the signed URL is valid for.
+   */
+  public static getSignedUrlMinimumLifetime(
+    expiresIn = BaseStorage.defaultSignedUrlExpires
+  ): number {
+    return expiresIn - BaseStorage.getSigningWindow(expiresIn);
+  }
+
+  /**
+   * Rounds the current time down to a fixed window so that repeated signatures
+   * of the same file produce an identical URL. Without this every signature is
+   * unique and caches can never be reused, which means the same file is
+   * downloaded again for each URL.
+   *
+   * The window never exceeds half of the requested lifetime, so a returned URL
+   * is always valid for at least half of `expiresIn`. Because the window only
+   * moves the signing time backwards, a URL never outlives the lifetime it
+   * would have had without it.
+   *
+   * @param expiresIn The number of seconds until the signed URL expires.
+   * @returns The timestamp to sign with.
+   */
+  protected static getSigningDate(expiresIn: number): Date {
+    const window = BaseStorage.getSigningWindow(expiresIn);
+
+    if (window < 1) {
+      return new Date();
+    }
+
+    const windowMs = window * 1000;
+    return new Date(Math.floor(Date.now() / windowMs) * windowMs);
+  }
+
+  /**
    * Returns a presigned post for uploading files to the storage provider.
    *
    * @param ctx The request context
@@ -29,7 +78,7 @@ export default abstract class BaseStorage {
    * @param acl The ACL to use
    * @param maxUploadSize The maximum upload size in bytes
    * @param contentType The content type of the file
-   * @returns The presigned post object to use on the client (TODO: Abstract away from S3)
+   * @returns The presigned post object to use on the client
    */
   public abstract getPresignedPost(
     ctx: AppContext,
@@ -38,6 +87,27 @@ export default abstract class BaseStorage {
     maxUploadSize: number,
     contentType: string
   ): Promise<Partial<PresignedPost>>;
+
+  /**
+   * Returns a presigned PUT URL and the headers the client must send with the
+   * PUT request. Subclasses that support PUT-based uploads (e.g. S3) should
+   * override this method. Returns undefined by default, signalling the client
+   * should fall back to the POST flow.
+   *
+   * @param key The path to store the file at.
+   * @param acl The ACL to use.
+   * @param contentLength The exact content length in bytes, signed into the URL.
+   * @param contentType The content type of the file.
+   * @returns The presigned PUT URL and required headers, or undefined if not supported.
+   */
+  public getPresignedPut(
+    _key: string,
+    _acl: string,
+    _contentLength: number,
+    _contentType: string
+  ): Promise<{ url: string; headers: Record<string, string> } | undefined> {
+    return Promise.resolve(undefined);
+  }
 
   /**
    * Returns a promise that resolves with a stream for reading a file from the storage provider.
@@ -119,20 +189,10 @@ export default abstract class BaseStorage {
    */
   public async getFileBuffer(key: string) {
     const stream = await this.getFileStream(key);
-    return new Promise<Buffer>((resolve, reject) => {
-      const chunks: Buffer[] = [];
-      if (!stream) {
-        return reject(new Error("No stream available"));
-      }
-
-      stream.on("data", (d) => {
-        chunks.push(d);
-      });
-      stream.once("end", () => {
-        resolve(Buffer.concat(chunks));
-      });
-      stream.once("error", reject);
-    });
+    if (!stream) {
+      throw new Error("No stream available");
+    }
+    return buffer(stream);
   }
 
   /**
@@ -142,7 +202,9 @@ export default abstract class BaseStorage {
    * @param key The path to store the file at
    * @param acl The ACL to use
    * @param init Optional fetch options to use
-   * @param options Optional upload options
+   * @param options Optional upload options. When imagesOnly is set, only PNG,
+   * JPEG, GIF and WebP files are stored, with the content type detected from
+   * the file data
    * @returns A promise that resolves when the file is uploaded
    */
   public async storeFromUrl(
@@ -150,7 +212,7 @@ export default abstract class BaseStorage {
     key: string,
     acl: string,
     init?: RequestInit,
-    options?: { maxUploadSize?: number }
+    options?: { maxUploadSize?: number; imagesOnly?: boolean }
   ): Promise<
     | {
         url: string;
@@ -217,7 +279,7 @@ export default abstract class BaseStorage {
           res.headers.get("content-type") ?? "application/octet-stream";
       } catch (err) {
         Logger.warn("Error fetching URL to upload", {
-          error: err.message,
+          error: errToString(err),
           url,
           key,
           acl,
@@ -229,6 +291,18 @@ export default abstract class BaseStorage {
     const contentLength = buffer.byteLength;
     if (contentLength === 0) {
       return;
+    }
+
+    if (options?.imagesOnly) {
+      const imageType = ImageHelper.detectType(buffer);
+      if (!imageType) {
+        Logger.info("utils", "URL to upload is not a supported image", {
+          url,
+          key,
+        });
+        return;
+      }
+      contentType = imageType.contentType;
     }
 
     try {
@@ -247,7 +321,7 @@ export default abstract class BaseStorage {
           }
         : undefined;
     } catch (err) {
-      Logger.error("Error uploading to file storage from URL", err, {
+      Logger.error("Error uploading to file storage from URL", toError(err), {
         url,
         key,
         acl,
@@ -269,12 +343,35 @@ export default abstract class BaseStorage {
   public abstract deleteFile(key: string): Promise<void>;
 
   /**
-   * Returns the content disposition for a given content type.
+   * Returns the Content-Disposition header value for a given content type and
+   * file name. Including the file name ensures browsers keep the original
+   * extension when downloading, rather than deriving one from the content type.
+   *
+   * The value is always US-ASCII, a name outside that range being carried in the
+   * RFC 5987 `filename*` parameter. Request signing hashes header values as
+   * UTF-8 while Node writes them as Latin-1, so a raw high byte here makes the
+   * storage provider calculate a different signature and reject the upload.
    *
    * @param contentType The content type
-   * @returns The content disposition
+   * @param fileName The name of the file, if known
+   * @returns The Content-Disposition header value
    */
-  public getContentDisposition(contentType?: string) {
+  public getContentDisposition(contentType?: string, fileName?: string) {
+    return contentDisposition(fileName, {
+      type: this.getContentDispositionType(contentType),
+      fallback: fileName?.replace(/[^\x20-\x7e]/g, "?"),
+    });
+  }
+
+  /**
+   * Returns the content disposition type for a given content type.
+   *
+   * @param contentType The content type
+   * @returns The content disposition type
+   */
+  public getContentDispositionType(
+    contentType?: string
+  ): "inline" | "attachment" {
     if (!contentType) {
       return "attachment";
     }
@@ -301,4 +398,15 @@ export default abstract class BaseStorage {
     "image/gif",
     "image/webp",
   ];
+
+  /**
+   * Returns the number of seconds that the signing timestamp is held constant
+   * for a signed URL with the given lifetime.
+   *
+   * @param expiresIn The number of seconds until the signed URL expires.
+   * @returns The window in seconds, or 0 if the lifetime is too short to align.
+   */
+  private static getSigningWindow(expiresIn: number): number {
+    return Math.min(BaseStorage.maxSigningWindow, Math.floor(expiresIn / 2));
+  }
 }

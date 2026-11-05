@@ -1,5 +1,15 @@
 import { Schema } from "prosemirror-model";
-import { isValidCellAlignment, isValidCellMarks } from "./table";
+import { TableMap } from "prosemirror-tables";
+import { doc, table, td, tr } from "@shared/test/editor";
+import {
+  cellWidget,
+  getCellAttrs,
+  getCellSpan,
+  getCellsStartingInColumn,
+  getCellsStartingInRow,
+  isValidCellAlignment,
+  isValidCellMarks,
+} from "./table";
 
 const schema = new Schema({
   nodes: {
@@ -163,5 +173,102 @@ describe("isValidCellMarks", () => {
   it("accepts registered marks without attrs", () => {
     expect(isValidCellMarks([{ type: "strong" }], schema)).toBe(true);
     expect(isValidCellMarks([{ type: "em" }], schema)).toBe(true);
+  });
+});
+
+// Shared tests run in both node and jsdom; reading cell attributes requires a DOM.
+describe.runIf(typeof document !== "undefined")("getCellAttrs", () => {
+  const cell = (attributes: Record<string, string>) => {
+    const element = document.createElement("td");
+    for (const [name, value] of Object.entries(attributes)) {
+      element.setAttribute(name, value);
+    }
+    return getCellAttrs(element);
+  };
+
+  it("reads the background written by the editor", () => {
+    expect(cell({ "data-bgcolor": "#FDEA9B" }).marks).toEqual([
+      { type: "background", attrs: { color: "#FDEA9B" } },
+    ]);
+  });
+
+  it("reads a background styled by an external application", () => {
+    expect(cell({ style: "background-color: #93c47d" }).marks).toEqual([
+      { type: "background", attrs: { color: "#93c47d" } },
+    ]);
+    expect(cell({ style: "background: yellow" }).marks).toEqual([
+      { type: "background", attrs: { color: "#ffff00" } },
+    ]);
+  });
+
+  it("reads valid spans and falls back to 1 for invalid spans", () => {
+    expect(cell({ colspan: "2", rowspan: "3" })).toMatchObject({
+      colspan: 2,
+      rowspan: 3,
+    });
+    expect(cell({})).toMatchObject({ colspan: 1, rowspan: 1 });
+    expect(cell({ colspan: "0", rowspan: "0" })).toMatchObject({
+      colspan: 1,
+      rowspan: 1,
+    });
+    expect(cell({ colspan: "1.5", rowspan: "abc" })).toMatchObject({
+      colspan: 1,
+      rowspan: 1,
+    });
+  });
+
+  it("ignores near-white and transparent cell backgrounds", () => {
+    expect(cell({ style: "background-color: #ffffff" }).marks).toBe(undefined);
+    expect(cell({ style: "background-color: transparent" }).marks).toBe(
+      undefined
+    );
+    expect(cell({}).marks).toBe(undefined);
+  });
+});
+
+describe("getCellSpan", () => {
+  const map = TableMap.get(
+    doc([
+      table([
+        tr([td("A", { rowspan: 2 }), td("B", { colspan: 2 })]),
+        tr([td("C"), td("D")]),
+        tr([td("E"), td("F"), td("G")]),
+      ]),
+    ]).child(0)
+  );
+
+  it("returns the rows spanned by a cell", () => {
+    expect(getCellSpan(map, 0, 0, "row")).toEqual({ start: 0, end: 2 });
+    expect(getCellSpan(map, 1, 0, "row")).toEqual({ start: 0, end: 2 });
+    expect(getCellSpan(map, 2, 0, "row")).toEqual({ start: 2, end: 3 });
+  });
+
+  it("returns the columns spanned by a cell", () => {
+    expect(getCellSpan(map, 0, 2, "column")).toEqual({ start: 1, end: 3 });
+    expect(getCellSpan(map, 1, 2, "column")).toEqual({ start: 2, end: 3 });
+  });
+
+  it("returns the cells that start in a row or column", () => {
+    const cell = (row: number, col: number) => map.map[row * map.width + col];
+    expect(getCellsStartingInRow(map, 1)).toEqual([cell(1, 1), cell(1, 2)]);
+    expect(getCellsStartingInColumn(map, 1)).toEqual([
+      cell(0, 1),
+      cell(1, 1),
+      cell(2, 1),
+    ]);
+    expect(getCellsStartingInColumn(map, 2)).toEqual([cell(1, 2), cell(2, 2)]);
+  });
+});
+
+describe("cellWidget", () => {
+  it("places the widget at the start of the cell, before its content", () => {
+    const toDOM = () => {
+      throw new Error("Not rendered");
+    };
+    const widget = cellWidget(1, toDOM, { key: "grip" });
+
+    expect(widget.from).toBe(2);
+    expect(widget.spec.side).toBe(-1);
+    expect(widget.spec.key).toBe("grip");
   });
 });

@@ -1,6 +1,7 @@
 import { observer } from "mobx-react";
 import { Trans, useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import { errToString } from "@shared/utils/error";
 import type { NavigationNode } from "@shared/types";
 import { CollectionPermission } from "@shared/types";
 import type Collection from "~/models/Collection";
@@ -45,12 +46,12 @@ function ConfirmMoveDialog({ collection, item, ...rest }: Props) {
             "You do not have permission to move {{ documentName }} to the {{ collectionName }} collection",
             {
               documentName: item.title,
-              collectionName: collection.name,
+              collectionName: collection.displayName,
             }
           )
         );
       } else {
-        toast.error(err.message);
+        toast.error(errToString(err));
       }
     } finally {
       dialogs.closeAllModals();
@@ -67,8 +68,8 @@ function ConfirmMoveDialog({ collection, item, ...rest }: Props) {
         defaults="Moving the document <em>{{ title }}</em> to the {{ newCollectionName }} collection will change permission for all workspace members from <em>{{ prevPermission }}</em> to <em>{{ newPermission }}</em>."
         values={{
           title: item.title,
-          prevCollectionName: prevCollection?.name,
-          newCollectionName: collection.name,
+          prevCollectionName: prevCollection?.displayName,
+          newCollectionName: collection.displayName,
           prevPermission: accessMapping[prevCollection?.permission || "null"],
           newPermission: accessMapping[collection.permission || "null"],
         }}

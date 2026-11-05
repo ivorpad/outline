@@ -1,12 +1,16 @@
 import type {
+  FindOptions,
+  Identifier,
   InferAttributes,
   InferCreationAttributes,
+  NonNullFindOptions,
   WhereOptions,
 } from "sequelize";
-import { Op } from "sequelize";
+import { EmptyResultError, Op } from "sequelize";
 import {
   ForeignKey,
   DefaultScope,
+  Scopes,
   Column,
   BeforeDestroy,
   BelongsTo,
@@ -14,22 +18,51 @@ import {
   DataType,
 } from "sequelize-typescript";
 import { v4 as uuidv4 } from "uuid";
-import type { CollectionPermission, FileOperationFormat } from "@shared/types";
-import { FileOperationState, FileOperationType } from "@shared/types";
+import type { CollectionPermission } from "@shared/types";
+import {
+  FileOperationFormat,
+  FileOperationState,
+  FileOperationType,
+} from "@shared/types";
 import FileStorage from "@server/storage/files";
+import type { APIContext } from "@server/types";
+import { ValidateKey } from "@server/validation";
 import Collection from "./Collection";
 import Document from "./Document";
 import Team from "./Team";
 import User from "./User";
 import ParanoidModel from "./base/ParanoidModel";
-import Fix from "./decorators/Fix";
 import { Buckets } from "./helpers/AttachmentHelper";
 
 export type FileOperationOptions = {
   includeAttachments?: boolean;
   includePrivate?: boolean;
   permission?: CollectionPermission | null;
+  /** The owner of the personal collection that was exported, if any. */
+  personalOwnerId?: string;
 };
+
+type AdditionalFindOptions = {
+  userId?: string;
+  rejectOnEmpty?: boolean | Error;
+};
+
+interface CreateCollectionExportOptions {
+  collection?: Collection;
+  team: Team;
+  format?: FileOperationFormat;
+  includeAttachments?: boolean;
+  includePrivate?: boolean;
+}
+
+interface CreateDocumentExportOptions {
+  document: Document;
+  format: FileOperationFormat;
+}
+
+type CreateExportOptions =
+  | CreateCollectionExportOptions
+  | CreateDocumentExportOptions;
 
 @DefaultScope(() => ({
   include: [
@@ -47,19 +80,199 @@ export type FileOperationOptions = {
     {
       model: Document.unscoped(),
       as: "document",
-      attributes: ["id", "title"],
+      attributes: ["id", "title", "collectionId"],
       required: false,
       paranoid: false,
+      include: [
+        {
+          model: Collection.unscoped(),
+          as: "collection",
+          attributes: ["id", "ownerId"],
+          required: false,
+          paranoid: false,
+        },
+      ],
     },
   ],
 }))
+@Scopes(() => ({
+  withSource: (userId: string) => {
+    if (!userId) {
+      return {};
+    }
+
+    return {
+      include: [
+        {
+          model: User,
+          as: "user",
+          paranoid: false,
+        },
+        {
+          model: Collection.scope([
+            "defaultScope",
+            {
+              method: ["withMembership", userId],
+            },
+          ]),
+          as: "collection",
+          required: false,
+          paranoid: false,
+        },
+        {
+          model: Document.scope([
+            "defaultScope",
+            {
+              method: ["withMembership", userId, false],
+            },
+          ]),
+          as: "document",
+          // Content columns are not needed to authorize or present an export.
+          attributes: { exclude: ["text", "content", "state"] },
+          required: false,
+          paranoid: false,
+        },
+      ],
+    };
+  },
+}))
 @Table({ tableName: "file_operations", modelName: "file_operation" })
-@Fix
 class FileOperation extends ParanoidModel<
   InferAttributes<FileOperation>,
   Partial<InferCreationAttributes<FileOperation>>
 > {
   static eventNamespace = "fileOperations";
+
+  /** The number of days a completed file operation remains downloadable. */
+  static expiryDays = 15;
+
+  /**
+   * Create a file operation for a team, collection, or document export.
+   *
+   * @param ctx the request context with the acting user and transaction.
+   * @param options the source and settings for the export.
+   * @returns the new file operation with its source associations set.
+   */
+  static async createExport(
+    ctx: APIContext,
+    options: CreateExportOptions
+  ): Promise<FileOperation> {
+    const { user } = ctx.state.auth;
+    const format = options.format ?? FileOperationFormat.MarkdownZip;
+
+    // The owner is stored on the export, as a document can move out of the
+    // personal collection after it was exported.
+    const sourceCollectionId =
+      "document" in options
+        ? options.document.collectionId
+        : options.collection?.id;
+    const sourceCollection = sourceCollectionId
+      ? await Collection.unscoped().findOne({
+          attributes: ["ownerId"],
+          where: { id: sourceCollectionId },
+          transaction: ctx.state.transaction,
+        })
+      : null;
+    const personalOwnerId = sourceCollection?.ownerId ?? undefined;
+
+    const source =
+      "document" in options
+        ? {
+            name: options.document.displayTitle,
+            documentId: options.document.id,
+            teamId: options.document.teamId,
+            options: personalOwnerId ? { personalOwnerId } : null,
+          }
+        : {
+            name: options.collection?.name || options.team.name,
+            collectionId: options.collection?.id,
+            teamId: user.teamId,
+            options: {
+              includeAttachments: options.includeAttachments ?? true,
+              includePrivate: options.includePrivate ?? true,
+              ...(personalOwnerId ? { personalOwnerId } : {}),
+            },
+          };
+    const { name, ...attributes } = source;
+    const key = this.getExportKey({
+      name,
+      teamId: source.teamId,
+      format,
+    });
+    const fileOperation = await this.createWithCtx(ctx, {
+      type: FileOperationType.Export,
+      state: FileOperationState.Creating,
+      format,
+      key,
+      url: null,
+      size: 0,
+      userId: user.id,
+      ...attributes,
+    });
+
+    fileOperation.user = user;
+
+    if ("document" in options) {
+      fileOperation.document = options.document;
+    } else if (options.collection) {
+      fileOperation.collection = options.collection;
+    }
+
+    return fileOperation;
+  }
+
+  /**
+   * Overrides the standard findByPk behavior to allow loading the exported
+   * collection or document with memberships for a user passed in by `userId`.
+   *
+   * @param id uuid
+   * @param options FindOptions
+   * @returns a promise resolving to a file operation instance or null.
+   */
+  static async findByPk(
+    id: Identifier,
+    options?: NonNullFindOptions<FileOperation> & AdditionalFindOptions
+  ): Promise<FileOperation>;
+  static async findByPk(
+    id: Identifier,
+    options?: FindOptions<FileOperation> & AdditionalFindOptions
+  ): Promise<FileOperation | null>;
+  static async findByPk(
+    id: Identifier,
+    options: FindOptions<FileOperation> & AdditionalFindOptions = {}
+  ): Promise<FileOperation | null> {
+    if (typeof id !== "string") {
+      if (options.rejectOnEmpty) {
+        throw options.rejectOnEmpty instanceof Error
+          ? options.rejectOnEmpty
+          : new EmptyResultError(
+              `File operation doesn't exist with id: ${String(id)}`
+            );
+      }
+      return null;
+    }
+
+    const { userId, ...rest } = options;
+
+    // Preserve the caller's scope when no userId is passed
+    const scope = userId
+      ? this.scope({ method: ["withSource", userId] })
+      : this;
+
+    const fileOperation = await scope.findOne({
+      ...rest,
+      where: { id },
+      rejectOnEmpty: false,
+    });
+
+    if (!fileOperation && rest.rejectOnEmpty) {
+      throw rest.rejectOnEmpty instanceof Error
+        ? rest.rejectOnEmpty
+        : new EmptyResultError(`File operation doesn't exist with id: ${id}`);
+    }
+
+    return fileOperation;
+  }
 
   @Column(DataType.ENUM(...Object.values(FileOperationType)))
   type: FileOperationType;
@@ -70,13 +283,13 @@ class FileOperation extends ParanoidModel<
   @Column(DataType.ENUM(...Object.values(FileOperationState)))
   state: FileOperationState;
 
-  @Column
+  @Column(DataType.STRING)
   key: string;
 
-  @Column
+  @Column(DataType.STRING)
   url?: string | null;
 
-  @Column
+  @Column(DataType.STRING)
   error: string | null;
 
   @Column(DataType.BIGINT)
@@ -91,12 +304,12 @@ class FileOperation extends ParanoidModel<
   /**
    * Mark the current file operation as expired and remove the file from storage.
    */
-  expire = async function () {
+  expire = async () => {
     this.state = FileOperationState.Expired;
     try {
       await FileStorage.deleteFile(this.key);
     } catch (err) {
-      if (err.retryable) {
+      if (err instanceof Error && "retryable" in err && err.retryable) {
         throw err;
       }
     }
@@ -180,6 +393,14 @@ class FileOperation extends ParanoidModel<
     });
   }
 
+  /**
+   * Get the storage key to write an export archive to.
+   *
+   * @param name the user-provided name of the exported source.
+   * @param teamId the team id.
+   * @param format the format of the export.
+   * @returns a storage key.
+   */
   static getExportKey({
     name,
     teamId,
@@ -189,9 +410,11 @@ class FileOperation extends ParanoidModel<
     teamId: string;
     format: FileOperationFormat;
   }) {
-    return `${
-      Buckets.uploads
-    }/${teamId}/${uuidv4()}/${name}-export.${format.replace(/outline-/, "")}.zip`;
+    const fileName = ValidateKey.sanitizeSegment(
+      `${name}-export.${format.replace(/outline-/, "")}.zip`
+    );
+
+    return `${Buckets.uploads}/${teamId}/${uuidv4()}/${fileName}`;
   }
 }
 

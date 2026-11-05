@@ -5,8 +5,10 @@ import { useMemo, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { useTheme } from "styled-components";
+import { errToString } from "@shared/utils/error";
 import Spinner from "@shared/components/Spinner";
-import { ImportState } from "@shared/types";
+import type { ImportableIntegrationService } from "@shared/types";
+import { ImportState, IntegrationService } from "@shared/types";
 import type Import from "~/models/Import";
 import { Action } from "~/components/Actions";
 import ConfirmationDialog from "~/components/ConfirmationDialog";
@@ -15,7 +17,9 @@ import Time from "~/components/Time";
 import useCurrentUser from "~/hooks/useCurrentUser";
 import useStores from "~/hooks/useStores";
 import { ImportMenu } from "~/menus/ImportMenu";
+import { Hook, PluginManager } from "~/utils/PluginManager";
 import isCloudHosted from "~/utils/isCloudHosted";
+import { useFormatNumber } from "~/hooks/useFormatNumber";
 
 type Props = {
   /** Import that's displayed as list item. */
@@ -27,6 +31,7 @@ export const ImportListItem = observer(({ importModel }: Props) => {
   const { dialogs } = useStores();
   const user = useCurrentUser();
   const theme = useTheme();
+  const formatNumber = useFormatNumber();
   const showProgress =
     importModel.state !== ImportState.Canceled &&
     importModel.state !== ImportState.Errored;
@@ -61,7 +66,7 @@ export const ImportListItem = observer(({ importModel }: Props) => {
         await importModel.cancel();
         toast.success(t("Import canceled"));
       } catch (err) {
-        toast.error(err.message);
+        toast.error(errToString(err));
       }
     };
 
@@ -88,7 +93,7 @@ export const ImportListItem = observer(({ importModel }: Props) => {
         await importModel.delete();
         toast.success(t("Import deleted"));
       } catch (err) {
-        toast.error(err.message);
+        toast.error(errToString(err));
       }
     };
 
@@ -107,6 +112,12 @@ export const ImportListItem = observer(({ importModel }: Props) => {
       ),
     });
   }, [t, dialogs, importModel]);
+
+  // Plugin importers register with an id that matches their service.
+  const serviceName =
+    coreServiceNames[importModel.service] ??
+    PluginManager.getHook(Hook.Imports, importModel.service)?.value.title ??
+    capitalize(importModel.service);
 
   const selfHostedHelp = isCloudHosted
     ? ""
@@ -134,11 +145,12 @@ export const ImportListItem = observer(({ importModel }: Props) => {
           &nbsp;
           <Time dateTime={importModel.createdAt} addSuffix shorten />
           &nbsp;•&nbsp;
-          {capitalize(importModel.service)}
+          {serviceName}
           {showProgress && (
             <>
               &nbsp;•&nbsp;
-              {t("{{ count }} document imported", {
+              {t("{{ total }} document imported", {
+                total: formatNumber(importModel.documentCount),
                 count: importModel.documentCount,
               })}
             </>
@@ -157,3 +169,11 @@ export const ImportListItem = observer(({ importModel }: Props) => {
     />
   );
 });
+
+/** Display names of the importers that are built in, rather than plugins. */
+const coreServiceNames: Partial<Record<ImportableIntegrationService, string>> =
+  {
+    [IntegrationService.Markdown]: "Markdown",
+    [IntegrationService.OKF]: "OKF",
+    [IntegrationService.JSON]: "JSON",
+  };

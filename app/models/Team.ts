@@ -1,12 +1,23 @@
 import { computed, observable } from "mobx";
 import { TeamPreferenceDefaults } from "@shared/constants";
-import type { TeamPreference, TeamPreferences, UserRole } from "@shared/types";
+import { CommentingAccess, TeamPreference } from "@shared/types";
+import type {
+  Plan,
+  PlanFeature,
+  TeamPreferences,
+  UserRole,
+} from "@shared/types";
 import { stringToColor } from "@shared/utils/color";
 import Model from "./base/Model";
 import Field from "./decorators/Field";
 
 class Team extends Model {
   static modelName = "Team";
+
+  constructor(fields: Record<string, unknown>, store: Model["store"]) {
+    super(fields, store);
+    this.initialize(fields);
+  }
 
   @Field
   @observable
@@ -58,7 +69,7 @@ class Team extends Model {
 
   @Field
   @observable
-  subdomain: string | null | undefined;
+  subdomain: string | null | undefined = undefined;
 
   @Field
   @observable
@@ -73,14 +84,20 @@ class Team extends Model {
   preferences: TeamPreferences | null;
 
   @observable
-  domain: string | null | undefined;
+  domain: string | null | undefined = undefined;
 
   @observable
   url: string;
 
   @Field
   @observable
-  allowedDomains: string[] | null | undefined;
+  allowedDomains: string[] | null | undefined = undefined;
+
+  @observable
+  plan: Plan;
+
+  @observable
+  entitlements: PlanFeature[];
 
   @computed
   get signinMethods(): string {
@@ -95,6 +112,29 @@ class Team extends Model {
   @computed
   get initial(): string {
     return (this.name ? this.name[0] : "?").toUpperCase();
+  }
+
+  /**
+   * Whether commenting is enabled for the team, for either members or
+   * members and guests.
+   *
+   * @returns true if commenting is enabled, false otherwise.
+   */
+  @computed
+  get commentingEnabled(): boolean {
+    const access = this.getPreference(TeamPreference.Commenting);
+    // A legacy boolean `false` (team not yet migrated) means disabled.
+    return access !== CommentingAccess.None && access !== false;
+  }
+
+  /**
+   * Whether the team is entitled to use the given feature.
+   *
+   * @param feature The feature to check for.
+   * @returns true if the team is entitled to the feature, false otherwise.
+   */
+  hasEntitlement(feature: PlanFeature): boolean {
+    return !!this.entitlements?.includes(feature);
   }
 
   /**

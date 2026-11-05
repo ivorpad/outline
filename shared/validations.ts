@@ -2,6 +2,22 @@ export const AttachmentValidation = {
   /** The limited allowable mime-types for user and team avatars */
   avatarContentTypes: ["image/jpg", "image/jpeg", "image/png"],
 
+  /**
+   * The mime-types and file extensions offered by the avatar file picker. HEIC
+   * and HEIF images are converted to a type in `avatarContentTypes` by the
+   * client before they are uploaded. Extensions are included because some
+   * platforms report an empty mime-type for these files.
+   */
+  avatarInputContentTypes: [
+    "image/jpg",
+    "image/jpeg",
+    "image/png",
+    "image/heic",
+    "image/heif",
+    ".heic",
+    ".heif",
+  ],
+
   /** The most widely supported mime-types across modern browsers */
   emojiContentTypes: [
     "image/png",
@@ -49,7 +65,12 @@ export const CollectionValidation = {
 
 export const CommentValidation = {
   /** The maximum length of a comment */
-  maxLength: 1000,
+  maxLength: 10_000,
+};
+
+export const DeprecationValidation = {
+  /** The maximum length of an archive or deletion reason. */
+  maxReasonLength: 2000,
 };
 
 export const DocumentValidation = {
@@ -64,6 +85,9 @@ export const DocumentValidation = {
 
   /** The maximum recommended size of the document content */
   maxRecommendedLength: 250000,
+
+  /** The maximum length of the document text content */
+  maxLength: 1500 * 1024,
 };
 
 export const GroupValidation = {
@@ -89,13 +113,22 @@ export const OAuthClientValidation = {
   maxDeveloperNameLength: 100,
 
   /** The maximum length of the OAuth client developer URL */
-  maxDeveloperUrlLength: 255,
+  maxDeveloperUrlLength: 1024,
 
   /** The maximum length of the OAuth client avatar URL */
-  maxAvatarUrlLength: 255,
+  maxAvatarUrlLength: 1024,
 
   /** The maximum length of an OAuth client redirect URI */
-  maxRedirectUriLength: 255,
+  maxRedirectUriLength: 1024,
+
+  /** The maximum length of an OAuth client ID, which can be a metadata document URL */
+  maxClientIdLength: 1024,
+
+  /** The prefix of client IDs that are the URL of a client ID metadata document */
+  metadataDocumentClientIdPrefix: "https://",
+
+  /** The maximum number of redirect URIs for an OAuth client */
+  maxRedirectUris: 20,
 
   /** The allowed OAuth client types */
   clientTypes: ["confidential", "public"] as const,
@@ -170,7 +203,18 @@ export const WebhookSubscriptionValidation = {
   /** The maximum length of the webhook name */
   maxNameLength: 255,
   /** The maximum length of the webhook url */
-  maxUrlLength: 255,
+  maxUrlLength: 1024,
+};
+
+export const FilterValidation = {
+  /** The maximum nesting depth of a filter expression */
+  maxDepth: 5,
+
+  /** The maximum number of values in an `in` / `notIn` array */
+  maxInValues: 100,
+
+  /** The maximum number of conditions and groups a filter may contain */
+  maxNodes: 50,
 };
 
 export const EmojiValidation = {

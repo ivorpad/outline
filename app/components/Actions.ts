@@ -1,5 +1,6 @@
 import styled from "styled-components";
-import breakpoint from "styled-components-breakpoint";
+import { breakpoint } from "@shared/styles/breakpoint";
+import { MOBILE_TOUCH_TARGET } from "@shared/constants";
 import { s } from "@shared/styles";
 import Flex from "~/components/Flex";
 
@@ -9,6 +10,10 @@ export const Action = styled(Flex)`
   height: 32px;
   font-size: 15px;
   flex-shrink: 0;
+
+  ${breakpoint("mobile", "tablet")`
+    height: ${MOBILE_TOUCH_TARGET}px;
+  `};
 
   &:empty {
     display: none;
@@ -31,7 +36,7 @@ const Actions = styled(Flex)`
   background: ${s("background")};
   padding: 12px;
   backdrop-filter: blur(20px);
-  gap: 12px;
+  gap: 8px;
 
   @media print {
     display: none;

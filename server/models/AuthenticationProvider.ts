@@ -24,11 +24,11 @@ import Model from "@server/models/base/Model";
 import { ValidationError } from "../errors";
 import Team from "./Team";
 import UserAuthentication from "./UserAuthentication";
-import Fix from "./decorators/Fix";
 import Length from "./validators/Length";
 
 // TODO: Avoid this hardcoding of plugins
 import AzureClient from "plugins/azure/server/azure";
+import DiscordClient from "plugins/discord/server/discord";
 import GoogleClient from "plugins/google/server/google";
 import OIDCClient from "plugins/oidc/server/oidc";
 import type { APIContext } from "@server/types";
@@ -53,7 +53,6 @@ import type { DestroyOptions } from "sequelize";
   modelName: "authentication_provider",
   updatedAt: false,
 })
-@Fix
 class AuthenticationProvider extends Model<
   InferAttributes<AuthenticationProvider>,
   Partial<InferCreationAttributes<AuthenticationProvider>>
@@ -68,18 +67,18 @@ class AuthenticationProvider extends Model<
     max: 255,
     msg: "name must be 255 characters or less",
   })
-  @Column
+  @Column(DataType.STRING)
   name: string;
 
   @Default(true)
-  @Column
+  @Column(DataType.BOOLEAN)
   enabled: boolean;
 
   @Length({
     max: 255,
     msg: "providerId must be 255 characters or less",
   })
-  @Column
+  @Column(DataType.STRING)
   providerId: string;
 
   /** Provider-specific settings such as group sync configuration. */
@@ -127,6 +126,8 @@ class AuthenticationProvider extends Model<
         return new AzureClient();
       case "oidc":
         return new OIDCClient();
+      case "discord":
+        return new DiscordClient();
       default:
         return undefined;
     }

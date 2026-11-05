@@ -4,13 +4,25 @@ import type { Revision } from "@server/models";
 import { DocumentHelper } from "@server/models/helpers/DocumentHelper";
 import presentUser from "./user";
 
-async function presentRevision(revision: Revision) {
-  // TODO: Remove this fallback once all revisions have been migrated
+type PresentRevisionOptions = {
+  /**
+   * Whether to include the document content. Defaults to true.
+   */
+  includeContent?: boolean;
+};
+
+async function presentRevision(
+  revision: Revision,
+  options: PresentRevisionOptions = {}
+) {
+  const { includeContent = true } = options;
+
+  // Older revisions may store the emoji icon as a prefix of the title.
   const { emoji, strippedTitle } = parseTitle(revision.title);
 
   const [data, text, collaborators] = await Promise.all([
-    DocumentHelper.toJSON(revision),
-    DocumentHelper.toMarkdown(revision),
+    includeContent ? DocumentHelper.toJSON(revision) : undefined,
+    includeContent ? DocumentHelper.toMarkdown(revision) : undefined,
     revision.collaborators,
   ]);
 
@@ -24,6 +36,11 @@ async function presentRevision(revision: Revision) {
     icon: revision.icon ?? emoji,
     color: revision.color,
     collaborators: collaborators.map((user) => presentUser(user)),
+    sourceMetadata: revision.sourceMetadata
+      ? {
+          authType: revision.sourceMetadata.authType,
+        }
+      : undefined,
     createdAt: revision.createdAt,
     createdBy: presentUser(revision.user),
     createdById: revision.userId,

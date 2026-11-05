@@ -10,6 +10,11 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 import styled from "styled-components";
+import {
+  dateToRelativeReadable,
+  hasTimeComponent,
+  parseISODate,
+} from "../../utils/date";
 import { Backticks } from "../../components/Backticks";
 import Flex from "../../components/Flex";
 import Icon from "../../components/Icon";
@@ -17,8 +22,9 @@ import { IssueStatusIcon } from "../../components/IssueStatusIcon";
 import { PullRequestIcon } from "../../components/PullRequestIcon";
 import Spinner from "../../components/Spinner";
 import Text from "../../components/Text";
-import useIsMounted from "../../hooks/useIsMounted";
 import useStores from "../../hooks/useStores";
+import useShare from "../../hooks/useShare";
+import env from "../../env";
 import theme from "../../styles/theme";
 import {
   IntegrationService,
@@ -28,7 +34,9 @@ import {
 } from "../../types";
 import { cn } from "../styles/utils";
 import type { ComponentProps } from "../types";
-import { toDisplayUrl, cdnPath } from "../../utils/urls";
+import lazyWithRetry from "../../utils/lazyWithRetry";
+import { sharedModelPath } from "../../utils/routeHelpers";
+import { toDisplayUrl, cdnPath, sanitizeImageSrc } from "../../utils/urls";
 import Squircle from "../../components/Squircle";
 
 type Attrs = {
@@ -52,6 +60,21 @@ const getAttributesFromNode = (node: Node): Attrs => {
   };
 };
 
+/**
+ * Returns a hook that scopes an internal model path to the current public share,
+ * if any, so that navigation stays within the share rather than falling through
+ * to the authenticated app (and its login screen).
+ */
+const useSharePath = () => {
+  const { shareId } = useShare();
+
+  return React.useCallback(
+    (path: string) =>
+      shareId ? sharedModelPath(shareId, path, env.ROOT_SHARE_ID) : path,
+    [shareId]
+  );
+};
+
 export const MentionUser = observer(function MentionUser_(
   props: ComponentProps
 ) {
@@ -68,7 +91,7 @@ export const MentionUser = observer(function MentionUser_(
       })}
     >
       <EmailIcon size={18} />
-      {user?.name || node.attrs.label}
+      <span>{user?.name || node.attrs.label}</span>
     </span>
   );
 });
@@ -89,7 +112,7 @@ export const MentionGroup = observer(function MentionGroup_(
       })}
     >
       <EmailIcon size={18} />
-      {group?.name || node.attrs.label}
+      <span>{group?.name || node.attrs.label}</span>
     </span>
   );
 });
@@ -101,7 +124,9 @@ export const MentionDocument = observer(function MentionDocument_(
   const { documents } = useStores();
   const doc = documents.get(node.attrs.modelId);
   const modelId = node.attrs.modelId;
+  const anchorId = node.attrs.anchorId;
   const { className, unfurl, ...attrs } = getAttributesFromNode(node);
+  const sharePath = useSharePath();
 
   React.useEffect(() => {
     if (modelId) {
@@ -109,13 +134,15 @@ export const MentionDocument = observer(function MentionDocument_(
     }
   }, [modelId, documents]);
 
+  const documentPath = sharePath(doc?.path ?? `/doc/${node.attrs.modelId}`);
+
   return (
     <Link
       {...attrs}
       className={cn(className, {
         "ProseMirror-selectednode": isSelected,
       })}
-      to={doc?.path ?? `/doc/${node.attrs.modelId}`}
+      to={anchorId ? `${documentPath}#${anchorId}` : documentPath}
     >
       {doc?.icon ? (
         <Icon
@@ -127,7 +154,7 @@ export const MentionDocument = observer(function MentionDocument_(
       ) : (
         <DocumentIcon size={18} />
       )}
-      {doc?.title || node.attrs.label}
+      <span>{doc?.title || node.attrs.label}</span>
     </Link>
   );
 });
@@ -140,6 +167,7 @@ export const MentionCollection = observer(function MentionCollection_(
   const collection = collections.get(node.attrs.modelId);
   const modelId = node.attrs.modelId;
   const { className, unfurl, ...attrs } = getAttributesFromNode(node);
+  const sharePath = useSharePath();
 
   React.useEffect(() => {
     if (modelId) {
@@ -153,7 +181,7 @@ export const MentionCollection = observer(function MentionCollection_(
       className={cn(className, {
         "ProseMirror-selectednode": isSelected,
       })}
-      to={collection?.path ?? `/collection/${node.attrs.modelId}`}
+      to={sharePath(collection?.path ?? `/collection/${node.attrs.modelId}`)}
     >
       {collection?.icon ? (
         <Icon
@@ -165,7 +193,7 @@ export const MentionCollection = observer(function MentionCollection_(
       ) : (
         <CollectionIcon size={18} />
       )}
-      {collection?.title || node.attrs.label}
+      <span>{collection?.title || node.attrs.label}</span>
     </Link>
   );
 });
@@ -184,7 +212,6 @@ type IssueUrlProps = ComponentProps & {
 
 export const MentionURL = (props: IssueUrlProps) => {
   const { unfurls } = useStores();
-  const isMounted = useIsMounted();
   const [loaded, setLoaded] = React.useState(false);
   const onChangeUnfurl = React.useRef(props.onChangeUnfurl).current; // stable reference to callback function.
 
@@ -204,11 +231,15 @@ export const MentionURL = (props: IssueUrlProps) => {
       return;
     }
 
+    // The node view may be destroyed before the fetch resolves, in which case
+    // the editor transaction in onChangeUnfurl must not be dispatched.
+    let cancelled = false;
+
     const fetchUnfurl = async () => {
       try {
         const unfurlModel = await unfurls.fetchUnfurl({ url });
 
-        if (!isMounted()) {
+        if (cancelled) {
           return;
         }
 
@@ -237,14 +268,16 @@ export const MentionURL = (props: IssueUrlProps) => {
           data,
         });
       } finally {
-        if (isMounted()) {
-          setLoaded(true);
-        }
+        setLoaded(true);
       }
     };
 
     void fetchUnfurl();
-  }, [unfurls, url, node, isMounted, onChangeUnfurl]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [unfurls, url, node, onChangeUnfurl]);
 
   if (!unfurl) {
     return !loaded ? (
@@ -265,7 +298,9 @@ export const MentionURL = (props: IssueUrlProps) => {
       rel="noopener noreferrer nofollow"
     >
       <Flex align="center" gap={6}>
-        {unfurl.faviconUrl ? <Logo src={unfurl.faviconUrl} alt="" /> : null}
+        {unfurl.faviconUrl ? (
+          <Logo src={sanitizeImageSrc(unfurl.faviconUrl)} alt="" />
+        ) : null}
         <Text>
           <Backticks content={unfurl.title} />
         </Text>
@@ -276,7 +311,6 @@ export const MentionURL = (props: IssueUrlProps) => {
 
 export const MentionIssue = observer((props: IssuePrProps) => {
   const { unfurls } = useStores();
-  const isMounted = useIsMounted();
   const [loaded, setLoaded] = React.useState(false);
   const onChangeUnfurl = React.useRef(props.onChangeUnfurl).current; // stable reference to callback function.
 
@@ -290,10 +324,14 @@ export const MentionIssue = observer((props: IssuePrProps) => {
   const unfurl = unfurls.get(attrs.href)?.data ?? unfurlAttr;
 
   React.useEffect(() => {
+    // The node view may be destroyed before the fetch resolves, in which case
+    // the editor transaction in onChangeUnfurl must not be dispatched.
+    let cancelled = false;
+
     const fetchIssue = async () => {
       const unfurlModel = await unfurls.fetchUnfurl({ url: attrs.href });
 
-      if (!isMounted()) {
+      if (cancelled) {
         return;
       }
 
@@ -308,7 +346,11 @@ export const MentionIssue = observer((props: IssuePrProps) => {
     };
 
     void fetchIssue();
-  }, [unfurls, attrs.href, isMounted, onChangeUnfurl]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [unfurls, attrs.href, onChangeUnfurl]);
 
   if (!unfurl) {
     return !loaded ? (
@@ -362,7 +404,6 @@ type ProjectProps = ComponentProps & {
 
 export const MentionProject = observer((props: ProjectProps) => {
   const { unfurls } = useStores();
-  const isMounted = useIsMounted();
   const [loaded, setLoaded] = React.useState(false);
   const onChangeUnfurl = React.useRef(props.onChangeUnfurl).current;
 
@@ -376,10 +417,14 @@ export const MentionProject = observer((props: ProjectProps) => {
   const unfurl = unfurls.get(attrs.href)?.data ?? unfurlAttr;
 
   React.useEffect(() => {
+    // The node view may be destroyed before the fetch resolves, in which case
+    // the editor transaction in onChangeUnfurl must not be dispatched.
+    let cancelled = false;
+
     const fetchProject = async () => {
       const unfurlModel = await unfurls.fetchUnfurl({ url: attrs.href });
 
-      if (!isMounted()) {
+      if (cancelled) {
         return;
       }
 
@@ -394,7 +439,11 @@ export const MentionProject = observer((props: ProjectProps) => {
     };
 
     void fetchProject();
-  }, [unfurls, attrs.href, isMounted, onChangeUnfurl]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [unfurls, attrs.href, onChangeUnfurl]);
 
   if (!unfurl) {
     return !loaded ? (
@@ -418,7 +467,7 @@ export const MentionProject = observer((props: ProjectProps) => {
     >
       <Flex align="center" gap={6}>
         {project.avatarUrl ? (
-          <ProjectAvatar src={project.avatarUrl} alt="" />
+          <ProjectAvatar src={sanitizeImageSrc(project.avatarUrl)} alt="" />
         ) : (
           <Squircle color={project.color} size={12} />
         )}
@@ -439,7 +488,6 @@ export const MentionProject = observer((props: ProjectProps) => {
 
 export const MentionPullRequest = observer((props: IssuePrProps) => {
   const { unfurls } = useStores();
-  const isMounted = useIsMounted();
   const [loaded, setLoaded] = React.useState(false);
   const onChangeUnfurl = React.useRef(props.onChangeUnfurl).current; // stable reference to callback function.
 
@@ -453,10 +501,14 @@ export const MentionPullRequest = observer((props: IssuePrProps) => {
   const unfurl = unfurls.get(attrs.href)?.data ?? unfurlAttr;
 
   React.useEffect(() => {
+    // The node view may be destroyed before the fetch resolves, in which case
+    // the editor transaction in onChangeUnfurl must not be dispatched.
+    let cancelled = false;
+
     const fetchPR = async () => {
       const unfurlModel = await unfurls.fetchUnfurl({ url: attrs.href });
 
-      if (!isMounted()) {
+      if (cancelled) {
         return;
       }
 
@@ -471,7 +523,11 @@ export const MentionPullRequest = observer((props: IssuePrProps) => {
     };
 
     void fetchPR();
-  }, [unfurls, attrs.href, isMounted, onChangeUnfurl]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [unfurls, attrs.href, onChangeUnfurl]);
 
   const sharedProps = {
     className: cn(className, {
@@ -510,6 +566,56 @@ export const MentionPullRequest = observer((props: IssuePrProps) => {
   );
 });
 
+type DateProps = ComponentProps & {
+  onChangeDate: (modelId: string) => void;
+};
+
+// Loaded lazily so its browser-only dependencies (Radix, react-day-picker)
+// don't enter the editor schema's static import graph, which is also used on
+// the server.
+const DateMentionPicker = lazyWithRetry(() => import("./DateMentionPicker"));
+
+export const MentionDate = observer(function MentionDate_(props: DateProps) {
+  const { isSelected, isEditable, node, onChangeDate } = props;
+  const { t } = useTranslation();
+  const { auth } = useStores();
+  const { className, unfurl, ...attrs } = getAttributesFromNode(node);
+
+  const language = auth.user?.language;
+  const iso = typeof node.attrs.modelId === "string" ? node.attrs.modelId : "";
+  const display = dateToRelativeReadable(iso, t, language);
+  const selectedDate = parseISODate(iso) ?? undefined;
+
+  const content = (
+    <DateMention
+      {...attrs}
+      className={cn(className, {
+        "ProseMirror-selectednode": isSelected,
+      })}
+      $editable={isEditable}
+    >
+      {display}
+    </DateMention>
+  );
+
+  if (!isEditable) {
+    return content;
+  }
+
+  return (
+    <React.Suspense fallback={content}>
+      <DateMentionPicker
+        selectedDate={selectedDate}
+        includeTime={hasTimeComponent(iso)}
+        language={language}
+        onChange={onChangeDate}
+      >
+        {content}
+      </DateMentionPicker>
+    </React.Suspense>
+  );
+});
+
 const MentionLoading = ({ className }: { className: string }) => {
   const { t } = useTranslation();
 
@@ -531,6 +637,11 @@ const MentionError = ({ className }: { className: string }) => {
     </span>
   );
 };
+
+const DateMention = styled.span<{ $editable: boolean }>`
+  cursor: ${(props) => (props.$editable ? "pointer" : "default")};
+  user-select: none;
+`;
 
 const StyledWarningIcon = styled(WarningIcon)`
   margin: 0 -2px;

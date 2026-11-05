@@ -1,7 +1,8 @@
 import path from "node:path";
 import fs from "fs-extra";
 
-const windowsInvalidFileNameCharsRegex = /[\\/:*?"<>|]/g;
+// "%" is included so that literal percent signs survive deserialization.
+const unsafeFileNameCharsRegex = /[\\/:*?"<>|%]/g;
 const windowsTrailingFileNameCharsRegex = /[. ]+$/g;
 const encodedWindowsCharacters: Record<string, string> = {
   "%2F": "/",
@@ -15,8 +16,10 @@ const encodedWindowsCharacters: Record<string, string> = {
   "%7C": "|",
   "%2E": ".",
   "%20": " ",
+  "%25": "%",
 };
-const encodedWindowsCharactersRegex = /%(?:2F|5C|3A|2A|3F|22|3C|3E|7C|2E|20)/gi;
+const encodedWindowsCharactersRegex =
+  /%(?:2F|5C|3A|2A|3F|22|3C|3E|7C|2E|20|25)/gi;
 
 /**
  * Encodes a single character to uppercase percent-encoding.
@@ -36,7 +39,7 @@ function encodeWindowsUnsafeCharacter(char: string): string {
  */
 export function serializeFilename(text: string): string {
   const encoded = text.replace(
-    windowsInvalidFileNameCharsRegex,
+    unsafeFileNameCharsRegex,
     encodeWindowsUnsafeCharacter
   );
 
@@ -66,69 +69,6 @@ export function deserializeFilename(text: string): string {
  */
 export function stringByteLength(str: string): number {
   return Buffer.byteLength(str, "utf8");
-}
-
-/**
- * Safely slice a string to a maximum byte length without breaking UTF-8 characters.
- *
- * @param str The string to slice.
- * @param maxBytes The maximum byte length.
- * @returns The sliced string.
- */
-function sliceStringToByteLength(str: string, maxBytes: number): string {
-  if (maxBytes <= 0) {
-    return "";
-  }
-
-  const buffer = Buffer.from(str, "utf8");
-  if (buffer.length <= maxBytes) {
-    return str;
-  }
-
-  // Work backwards from maxBytes to find valid UTF-8 boundary
-  for (let i = maxBytes; i > 0; i--) {
-    const slice = buffer.subarray(0, i);
-    const result = slice.toString("utf8");
-    // Check if the result round-trips correctly (no replacement characters)
-    if (Buffer.from(result, "utf8").equals(slice)) {
-      return result;
-    }
-  }
-
-  return "";
-}
-
-/**
- * Trim a file name to a maximum length, retaining the extension. The input
- * must be a filename only — passing a path (containing `/` or `\`) will throw.
- *
- * @param text The file name to trim.
- * @param length The maximum length of the file name in bytes.
- * @returns The trimmed file name.
- * @throws If `text` contains a path separator.
- */
-export function trimFilenameAndExt(text: string, length: number): string {
-  if (text.includes("/") || text.includes("\\")) {
-    throw new Error(
-      "trimFilenameAndExt expects a filename without path separators"
-    );
-  }
-
-  if (Buffer.byteLength(text, "utf8") > length) {
-    const ext = path.extname(text);
-    const name = path.basename(text, ext);
-    const extByteLength = Buffer.byteLength(ext, "utf8");
-    const availableBytesForName = length - extByteLength;
-
-    if (availableBytesForName <= 0) {
-      // If extension is too long, trim the whole filename
-      return sliceStringToByteLength(text, length);
-    }
-
-    const trimmedName = sliceStringToByteLength(name, availableBytesForName);
-    return trimmedName + ext;
-  }
-  return text;
 }
 
 /**
@@ -195,6 +135,7 @@ export function requireDirectory<T>(dirName: string): [T, string][] {
     const filePath = path.join(dirName, fileName);
     const name = path.basename(filePath.replace(/\.[jt]s$/, ""));
 
+    // oxlint-disable-next-line typescript/no-require-imports -- path is only known at runtime
     return [require(filePath), name];
   });
 }

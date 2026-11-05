@@ -1,5 +1,5 @@
 import invariant from "invariant";
-import { escapeRegExp, find, map } from "es-toolkit/compat";
+import { compact, escapeRegExp, find, map } from "es-toolkit/compat";
 import queryParser from "pg-tsquery";
 import type {
   BindOrReplacements,
@@ -8,9 +8,10 @@ import type {
   Order,
   WhereOptions,
 } from "sequelize";
-import { Op, Sequelize } from "sequelize";
+import { Op, QueryTypes, Sequelize } from "sequelize";
+import type { Filter } from "@shared/helpers/FilterHelper";
 import type { SearchableModel } from "@shared/types";
-import { DirectionFilter, SortFilter, StatusFilter } from "@shared/types";
+import { DirectionFilter, SortFilter } from "@shared/types";
 import { regexIndexOf, regexLastIndexOf } from "@shared/utils/string";
 import { getUrls } from "@shared/utils/urls";
 import { ValidationError } from "@server/errors";
@@ -20,7 +21,12 @@ import Document from "@server/models/Document";
 import Team from "@server/models/Team";
 import User from "@server/models/User";
 import { DocumentHelper } from "@server/models/helpers/DocumentHelper";
-import { sequelize } from "@server/storage/database";
+import {
+  buildSearchWhere,
+  collectEqValues,
+} from "@server/models/helpers/Filters";
+import { sequelizeReadOnly } from "@server/storage/database";
+import { QueryHelper } from "@server/storage/QueryHelper";
 import type {
   SearchOptions,
   SearchResponse,
@@ -33,6 +39,28 @@ type RankedDocument = Document & {
     searchRanking: number;
   };
 };
+
+type SearchWhere = WhereOptions<Document> & {
+  [Op.or]: WhereOptions<Document>[];
+  [Op.and]: WhereOptions<Document>[];
+};
+
+interface RankedSearchOptions {
+  where: SearchWhere;
+  query?: string;
+  sort?: SortFilter;
+  direction?: DirectionFilter;
+  usePopularityBoost?: boolean;
+  limit: number;
+  offset: number;
+}
+
+interface RankedSearch {
+  query?: string;
+  results: RankedDocument[];
+  where: SearchWhere;
+  replacements?: BindOrReplacements;
+}
 
 /**
  * Search provider that uses PostgreSQL full-text search via tsvector.
@@ -56,6 +84,12 @@ export default class PostgresSearchProvider extends BaseSearchProvider {
    * Cached regex pattern for quoted queries.
    */
   private static readonly QUOTED_QUERY_REGEX = /"([^"]*)"/g;
+
+  /**
+   * Cached regex pattern for identifier-like terms, words joined by "." or "_".
+   */
+  private static readonly IDENTIFIER_REGEX =
+    /^[\p{L}\p{N}]+(?:[._][\p{L}\p{N}]+)+$/u;
 
   /**
    * Cached regex pattern for break characters.
@@ -188,7 +222,9 @@ export default class PostgresSearchProvider extends BaseSearchProvider {
 
     const where = await PostgresSearchProvider.buildWhere(team, {
       ...options,
-      statusFilter: [...(options.statusFilter || []), StatusFilter.Published],
+      // Team-context search (used by shares) is always restricted to
+      // published, non-archived documents.
+      filter: PostgresSearchProvider.withPublishedConstraint(options.filter),
     });
 
     if (options.share) {
@@ -221,50 +257,51 @@ export default class PostgresSearchProvider extends BaseSearchProvider {
       });
     }
 
-    const findOptions = PostgresSearchProvider.buildFindOptions({
-      query,
-      sort: options.sort,
-      direction: options.direction,
-      usePopularityBoost: options.usePopularityBoost,
-    });
-
     try {
-      const resultsQuery = Document.unscoped().findAll({
-        ...findOptions,
+      const search = await PostgresSearchProvider.rankedSearch({
         where,
+        query,
+        sort: options.sort,
+        direction: options.direction,
+        usePopularityBoost: options.usePopularityBoost,
         limit,
         offset,
-      }) as unknown as Promise<RankedDocument[]>;
-
-      const countQuery = Document.unscoped().count({
-        // @ts-expect-error Types are incorrect for count
-        replacements: findOptions.replacements,
-        where,
-      }) as unknown as Promise<number>;
-      const [results, count] = await Promise.all([resultsQuery, countQuery]);
-
-      // Final query to get associated document data
-      const documents = await Document.findAll({
-        where: {
-          id: map(results, "id"),
-          teamId: team.id,
-        },
-        include: [
-          {
-            model: Collection,
-            as: "collection",
-          },
-        ],
       });
 
+      // Final query to get associated document data
+      const [documents, count] = await Promise.all([
+        Document.findAll({
+          where: {
+            id: map(search.results, "id"),
+            teamId: team.id,
+          },
+          include: [
+            {
+              model: Collection,
+              as: "collection",
+            },
+          ],
+        }),
+        PostgresSearchProvider.countResults({
+          results: search.results,
+          limit,
+          offset,
+          replacements: search.replacements,
+          where: search.where,
+        }),
+      ]);
+
       return PostgresSearchProvider.buildResponse({
-        query,
-        results,
+        query: search.query,
+        results: search.results,
         documents,
         count,
       });
     } catch (err) {
-      if (err.message.includes("syntax error in tsquery")) {
+      if (
+        err instanceof Error &&
+        err.message.includes("syntax error in tsquery")
+      ) {
         throw ValidationError("Invalid search query");
       }
       throw err;
@@ -280,65 +317,20 @@ export default class PostgresSearchProvider extends BaseSearchProvider {
 
     if (query) {
       where[Op.and].push({
-        title: {
-          [Op.iLike]: `%${query}%`,
-        },
+        title: { [Op.iLike]: QueryHelper.likeContains(query) },
       });
     }
-
-    const include = [
-      {
-        association: "memberships",
-        where: {
-          userId: user.id,
-        },
-        required: false,
-        separate: false,
-      },
-      {
-        association: "groupMemberships",
-        required: false,
-        separate: false,
-        include: [
-          {
-            association: "group",
-            required: true,
-            include: [
-              {
-                association: "groupUsers",
-                required: true,
-                where: {
-                  userId: user.id,
-                },
-              },
-            ],
-          },
-        ],
-      },
-      {
-        model: User,
-        as: "createdBy",
-        paranoid: false,
-      },
-      {
-        model: User,
-        as: "updatedBy",
-        paranoid: false,
-      },
-    ];
 
     return Document.withMembershipScope(user.id, {
       includeDrafts: true,
     }).findAll({
       where,
-      subQuery: false,
       order: [
         [
           options.sort ?? SortFilter.UpdatedAt,
           options.direction ?? DirectionFilter.DESC,
         ],
       ],
-      include,
       offset,
       limit,
     });
@@ -367,7 +359,7 @@ export default class PostgresSearchProvider extends BaseSearchProvider {
         teamId: user.teamId,
       },
       order: [["name", "ASC"]],
-      replacements: { query: `%${query}%` },
+      replacements: { query: QueryHelper.likeContains(query ?? "") },
       limit,
       offset,
     });
@@ -381,82 +373,44 @@ export default class PostgresSearchProvider extends BaseSearchProvider {
 
     const where = await PostgresSearchProvider.buildWhere(user, options);
 
-    const findOptions = PostgresSearchProvider.buildFindOptions({
-      query,
-      sort: options.sort,
-      direction: options.direction,
-    });
-
-    const include = [
-      {
-        association: "memberships",
-        where: {
-          userId: user.id,
-        },
-        required: false,
-        separate: false,
-      },
-      {
-        association: "groupMemberships",
-        required: false,
-        separate: false,
-        include: [
-          {
-            association: "group",
-            required: true,
-            include: [
-              {
-                association: "groupUsers",
-                required: true,
-                where: {
-                  userId: user.id,
-                },
-              },
-            ],
-          },
-        ],
-      },
-    ];
-
     try {
-      const results = (await Document.unscoped().findAll({
-        ...findOptions,
-        subQuery: false,
-        include,
+      const search = await PostgresSearchProvider.rankedSearch({
         where,
+        query,
+        sort: options.sort,
+        direction: options.direction,
         limit,
         offset,
-      })) as unknown as RankedDocument[];
-
-      const countQuery = Document.unscoped().count({
-        // @ts-expect-error Types are incorrect for count
-        subQuery: false,
-        include,
-        replacements: findOptions.replacements,
-        where,
-      }) as unknown as Promise<number>;
+      });
 
       // Final query to get associated document data
       const [documents, count] = await Promise.all([
         Document.withMembershipScope(user.id, { includeDrafts: true }).findAll({
           where: {
             teamId: user.teamId,
-            id: map(results, "id"),
+            id: map(search.results, "id"),
           },
         }),
-        results.length < limit && offset === 0
-          ? Promise.resolve(results.length)
-          : countQuery,
+        PostgresSearchProvider.countResults({
+          results: search.results,
+          limit,
+          offset,
+          replacements: search.replacements,
+          where: search.where,
+        }),
       ]);
 
       return PostgresSearchProvider.buildResponse({
-        query,
-        results,
+        query: search.query,
+        results: search.results,
         documents,
         count,
       });
     } catch (err) {
-      if (err.message.includes("syntax error in tsquery")) {
+      if (
+        err instanceof Error &&
+        err.message.includes("syntax error in tsquery")
+      ) {
         throw ValidationError("Invalid search query");
       }
       throw err;
@@ -504,6 +458,176 @@ export default class PostgresSearchProvider extends BaseSearchProvider {
     _metadata: Record<string, unknown>
   ): Promise<void> {
     // PostgreSQL metadata lives in the same row as the document
+  }
+
+  /**
+   * Runs the ranked search. When an unquoted query matches no documents, the
+   * search runs again with the query quoted, which is slower but also matches
+   * text that the full-text index does not. Queries shorter than two
+   * characters or made only of stop words are not retried.
+   */
+  private static async rankedSearch(
+    options: RankedSearchOptions
+  ): Promise<RankedSearch> {
+    const search = await PostgresSearchProvider.runRankedSearch(options);
+    const { query } = options;
+
+    if (search.results.length || !query || query.includes('"')) {
+      return search;
+    }
+
+    // URLs already match as literal text, so only the remaining text is quoted.
+    const urls = getUrls(query);
+    const text = urls
+      .reduce((q, url) => q.replace(url, " "), query)
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, PostgresSearchProvider.maxQueryLength - 2)
+      .trim();
+
+    if (
+      text.length < 2 ||
+      (await PostgresSearchProvider.isOnlyStopWords(text))
+    ) {
+      return search;
+    }
+
+    // An empty page past the first can still follow earlier matches.
+    if (options.offset) {
+      const count = await PostgresSearchProvider.countResults({
+        results: search.results,
+        limit: options.limit,
+        offset: options.offset,
+        replacements: search.replacements,
+        where: search.where,
+      });
+      if (count) {
+        return search;
+      }
+    }
+
+    return PostgresSearchProvider.runRankedSearch({
+      ...options,
+      query: [`"${text}"`, ...urls].join(" "),
+    });
+  }
+
+  /**
+   * Returns true when the full-text parser keeps no terms from the query, as
+   * Postgres drops stop words.
+   */
+  private static async isOnlyStopWords(query: string): Promise<boolean> {
+    const [row] = await sequelizeReadOnly.query<{ nodes: number }>(
+      `SELECT numnode(to_tsquery('english', :query)) AS nodes`,
+      {
+        replacements: {
+          query: PostgresSearchProvider.webSearchQuery(query),
+        },
+        type: QueryTypes.SELECT,
+      }
+    );
+    return row?.nodes === 0;
+  }
+
+  private static async runRankedSearch({
+    where,
+    query,
+    sort,
+    direction,
+    usePopularityBoost,
+    limit,
+    offset,
+  }: RankedSearchOptions): Promise<RankedSearch> {
+    const findOptions = PostgresSearchProvider.buildFindOptions({
+      query,
+      sort,
+      direction,
+      usePopularityBoost,
+    });
+    const queryWhere: SearchWhere = query
+      ? {
+          ...where,
+          [Op.and]: [
+            ...where[Op.and],
+            ...PostgresSearchProvider.buildQueryWhere(query),
+          ],
+        }
+      : where;
+    const results = await PostgresSearchProvider.findRankedResults({
+      findOptions,
+      where: queryWhere,
+      limit,
+      offset,
+    });
+
+    return {
+      query,
+      results,
+      where: queryWhere,
+      replacements: findOptions.replacements,
+    };
+  }
+
+  /**
+   * Executes the ranked search query inside a transaction opened on the
+   * read-replica connection, offloading the most expensive query from the
+   * primary. The transaction also ensures the statement timeout for
+   * request-handling processes applies, cancelling a pathological query at
+   * the database rather than letting it run unbounded.
+   */
+  private static findRankedResults({
+    findOptions,
+    where,
+    limit,
+    offset,
+  }: {
+    findOptions: FindOptions;
+    where: WhereOptions<Document>;
+    limit: number;
+    offset: number;
+  }): Promise<RankedDocument[]> {
+    return sequelizeReadOnly.transaction(
+      (transaction) =>
+        Document.unscoped().findAll({
+          ...findOptions,
+          where,
+          limit,
+          offset,
+          transaction,
+        }) as unknown as Promise<RankedDocument[]>
+    );
+  }
+
+  /**
+   * Returns the total number of documents matching the search, avoiding a
+   * second query over the search conditions when the requested page was not
+   * filled and the total can be inferred.
+   */
+  private static countResults({
+    results,
+    limit,
+    offset,
+    replacements,
+    where,
+  }: {
+    results: RankedDocument[];
+    limit: number;
+    offset: number;
+    replacements?: BindOrReplacements;
+    where: WhereOptions<Document>;
+  }): Promise<number> {
+    if (results.length < limit && (offset === 0 || results.length > 0)) {
+      return Promise.resolve(offset + results.length);
+    }
+
+    return sequelizeReadOnly.transaction(
+      (transaction) =>
+        Document.unscoped().count({
+          replacements,
+          where,
+          transaction,
+        }) as unknown as Promise<number>
+    );
   }
 
   private static buildFindOptions({
@@ -594,22 +718,42 @@ export default class PostgresSearchProvider extends BaseSearchProvider {
         ? 0
         : regexIndexOf(text, breakCharsRegex, offsetStartIndex)
     );
-    const context = text.replace(highlightRegex, "<b>$&</b>");
-    const endIndex = regexLastIndexOf(
-      context,
-      breakCharsRegex,
-      startIndex + 250
-    );
+    // Ends on the last word boundary within the window, or at the window
+    // itself when the text has none.
+    const maxEndIndex = Math.min(text.length, startIndex + 250);
+    const breakIndex = regexLastIndexOf(text, breakCharsRegex, maxEndIndex);
+    const endIndex = breakIndex > startIndex ? breakIndex : maxEndIndex;
 
-    return context.slice(startIndex, endIndex);
+    // Highlight after slicing, as the inserted tags shift every index that
+    // follows an earlier match.
+    return text
+      .slice(startIndex, endIndex)
+      .replace(highlightRegex, "<b>$&</b>");
+  }
+
+  /**
+   * AND a "published, non-archived" constraint into a filter expression.
+   *
+   * @param filter the filter to constrain, or undefined.
+   * @returns a filter that always requires Published status.
+   */
+  private static withPublishedConstraint(filter: Filter | undefined): Filter {
+    const publishedShape: Filter = {
+      operator: "AND",
+      filters: [
+        { field: "archivedAt", operator: "isNull" },
+        { field: "publishedAt", operator: "isNotNull" },
+      ],
+    };
+    if (!filter) {
+      return publishedShape;
+    }
+    return { operator: "AND", filters: [filter, publishedShape] };
   }
 
   private static async buildWhere(model: User | Team, options: SearchOptions) {
     const teamId = model instanceof Team ? model.id : model.teamId;
-    const where: WhereOptions<Document> & {
-      [Op.or]: WhereOptions<Document>[];
-      [Op.and]: WhereOptions<Document>[];
-    } = {
+    const where: SearchWhere = {
       teamId,
       [Op.or]: [],
       [Op.and]: [
@@ -617,177 +761,184 @@ export default class PostgresSearchProvider extends BaseSearchProvider {
           deletedAt: {
             [Op.eq]: null,
           },
+          template: false,
+          sourceMetadata: {
+            trial: {
+              [Op.is]: null,
+            },
+          },
         },
       ],
     };
 
+    const filter = options.filter;
+
+    // A document is visible if any of:
+    //
+    //   - direct or group membership on the document
+    //   - the user is the creator AND the doc has no collection (unplaced
+    //     drafts that no membership/collection check can reach)
+    //   - the doc is published AND lives in a collection the user can access
+    //     (the common case for non-draft visibility)
+    //   - the user is the creator AND the doc lives in a collection they can
+    //     access (covers own drafts in shared collections — collection access
+    //     alone does not grant visibility into other users' drafts)
+    //
+    // Membership and collection access are resolved to id lists upfront so the
+    // search query needs no membership joins. Status/date narrowing is applied
+    // separately via `filter`.
+    //
+    // For Team contexts (share-based search), the caller is privileged and has
+    // done its own authorization — narrow to the filter's collectionId if
+    // specified, otherwise to the team's publicly-permissioned set.
     if (model instanceof User) {
-      where[Op.or].push(
-        { "$memberships.id$": { [Op.ne]: null } },
-        { "$groupMemberships.id$": { [Op.ne]: null } }
-      );
-
-      // Allow users to see their own drafts that have no collection, where no
-      // membership or collection access applies. Drafts in collections remain
-      // gated by the collection/membership checks above.
-      if (options.statusFilter?.includes(StatusFilter.Draft)) {
-        where[Op.or].push({
-          createdById: model.id,
-          collectionId: { [Op.is]: null },
-          publishedAt: { [Op.eq]: null },
-          archivedAt: { [Op.eq]: null },
-        });
+      const [membershipDocumentIds, collectionIds] = await Promise.all([
+        Document.membershipDocumentIds(model.id),
+        model.collectionIds(),
+      ]);
+      if (membershipDocumentIds.length) {
+        where[Op.or].push({ id: membershipDocumentIds });
       }
-    }
-
-    // Ensure we're filtering by the users accessible collections. If
-    // collectionId is passed as an option it is assumed that the authorization
-    // has already been done in the router
-    const collectionIds = options.collectionId
-      ? [options.collectionId]
-      : await model.collectionIds();
-
-    if (options.collectionId) {
-      where[Op.and].push({ collectionId: options.collectionId });
-    }
-    if (collectionIds.length) {
-      where[Op.or].push({ collectionId: collectionIds });
-    }
-
-    if (options.dateFilter) {
-      where[Op.and].push({
-        updatedAt: {
-          [Op.gt]: sequelize.literal(
-            `now() - interval '1 ${options.dateFilter}'`
-          ),
-        },
+      where[Op.or].push({
+        createdById: model.id,
+        collectionId: { [Op.is]: null },
       });
-    }
-
-    if (options.collaboratorIds) {
-      where[Op.and].push({
-        collaboratorIds: {
-          [Op.contains]: options.collaboratorIds,
-        },
-      });
-    }
-
-    if (options.documentIds) {
-      where[Op.and].push({
-        id: options.documentIds,
-      });
-    }
-
-    const statusQuery = [];
-    if (options.statusFilter?.includes(StatusFilter.Published)) {
-      statusQuery.push({
-        [Op.and]: [
+      if (collectionIds.length) {
+        where[Op.or].push(
           {
-            publishedAt: {
-              [Op.ne]: null,
-            },
-            archivedAt: {
-              [Op.eq]: null,
-            },
+            collectionId: collectionIds,
+            publishedAt: { [Op.ne]: null },
           },
-        ],
-      });
-    }
-
-    if (
-      options.statusFilter?.includes(StatusFilter.Draft) &&
-      // Only ever include draft results for the user's own documents
-      model instanceof User
-    ) {
-      statusQuery.push({
-        [Op.and]: [
           {
-            publishedAt: {
-              [Op.eq]: null,
-            },
-            archivedAt: {
-              [Op.eq]: null,
-            },
-            [Op.or]: [
-              { createdById: model.id },
-              { "$memberships.id$": { [Op.ne]: null } },
-            ],
-          },
-        ],
-      });
-    }
-
-    if (options.statusFilter?.includes(StatusFilter.Archived)) {
-      statusQuery.push({
-        archivedAt: {
-          [Op.ne]: null,
-        },
-      });
-    }
-
-    if (statusQuery.length) {
-      where[Op.and].push({
-        [Op.or]: statusQuery,
-      });
-    }
-
-    if (options.query) {
-      // find words that look like urls, these should be treated separately as the postgres full-text
-      // index will generally not match them.
-      let likelyUrls = getUrls(options.query);
-
-      // remove likely urls, and escape the rest of the query.
-      let limitedQuery = PostgresSearchProvider.escapeQuery(
-        likelyUrls
-          .reduce((q, url) => q.replace(url, ""), options.query)
-          .slice(0, PostgresSearchProvider.maxQueryLength)
-          .trim()
-      );
-
-      // Escape the URLs
-      likelyUrls = likelyUrls.map((url) =>
-        PostgresSearchProvider.escapeQuery(url)
-      );
-
-      // Extract quoted queries and add them to the where clause, up to a maximum of 3 total.
-      const quotedQueries = Array.from(limitedQuery.matchAll(/"([^"]*)"/g)).map(
-        (match) => match[1]
-      );
-
-      // remove quoted queries from the limited query
-      limitedQuery = limitedQuery.replace(/"([^"]*)"/g, "");
-
-      const iLikeQueries = [...quotedQueries, ...likelyUrls].slice(0, 3);
-
-      for (const match of iLikeQueries) {
-        where[Op.and].push({
-          [Op.or]: [
-            {
-              title: {
-                [Op.iLike]: `%${match}%`,
-              },
-            },
-            {
-              text: {
-                [Op.iLike]: `%${match}%`,
-              },
-            },
-          ],
-        });
-      }
-
-      if (limitedQuery || iLikeQueries.length === 0) {
-        where[Op.and].push(
-          Sequelize.fn(
-            `"searchVector" @@ to_tsquery`,
-            "english",
-            Sequelize.literal(":query")
-          )
+            createdById: model.id,
+            collectionId: collectionIds,
+          }
         );
       }
+    } else {
+      const explicitCollectionIds = filter
+        ? collectEqValues(filter, "collectionId")
+        : [];
+      const collectionIds = explicitCollectionIds.length
+        ? explicitCollectionIds
+        : await model.collectionIds();
+      if (collectionIds.length) {
+        where[Op.or].push({ collectionId: collectionIds });
+      }
+    }
+
+    if (filter) {
+      where[Op.and].push(buildSearchWhere<Document>(filter));
     }
 
     return where;
+  }
+
+  /**
+   * Builds the conditions that match documents to a search query.
+   *
+   * @param query the user search query.
+   * @returns the where conditions.
+   */
+  private static buildQueryWhere(query: string): WhereOptions<Document>[] {
+    const conditions: WhereOptions<Document>[] = [];
+
+    // find words that look like urls, these should be treated separately as the postgres full-text
+    // index will generally not match them.
+    const likelyUrls = getUrls(query);
+
+    // remove likely urls from the query.
+    let limitedQuery = likelyUrls
+      .reduce((q, url) => q.replace(url, ""), query)
+      .slice(0, PostgresSearchProvider.maxQueryLength)
+      .trim();
+
+    // Extract quoted queries and add them to the where clause, up to a maximum of 3 total.
+    const quotedQueries = Array.from(limitedQuery.matchAll(/"([^"]*)"/g)).map(
+      (match) => match[1]
+    );
+
+    // remove quoted queries from the limited query
+    limitedQuery = limitedQuery.replace(/"([^"]*)"/g, "");
+
+    const iLikeQueries = [...quotedQueries, ...likelyUrls].slice(0, 3);
+
+    for (const match of iLikeQueries) {
+      conditions.push(PostgresSearchProvider.buildContainsMatch(match));
+    }
+
+    if (limitedQuery || iLikeQueries.length === 0) {
+      conditions.push(PostgresSearchProvider.buildTextMatch(limitedQuery));
+    }
+
+    return conditions;
+  }
+
+  /**
+   * Builds the full-text condition for the unquoted part of a query. Terms
+   * that look like identifiers, such as "config.ws_value", also match as
+   * literal text, as the postgres parser does not always split them into the
+   * same lexemes in a document as in a query.
+   *
+   * @param query the unquoted part of the user search query.
+   * @returns the where condition.
+   */
+  private static buildTextMatch(query: string): WhereOptions<Document> {
+    const fullTextMatch = Sequelize.fn(
+      `"searchVector" @@ to_tsquery`,
+      "english",
+      Sequelize.literal(":query")
+    );
+    const terms = query.split(/\s+/).filter(Boolean);
+    const identifiers = terms
+      .filter((term) => PostgresSearchProvider.IDENTIFIER_REGEX.test(term))
+      .slice(0, 3);
+
+    if (!identifiers.length) {
+      return fullTextMatch;
+    }
+
+    const conditions: WhereOptions<Document>[] = identifiers.map((term) =>
+      PostgresSearchProvider.buildContainsMatch(term)
+    );
+    const remainder = terms
+      .filter((term) => !identifiers.includes(term))
+      .join(" ");
+
+    if (remainder) {
+      const remainderQuery = Sequelize.fn(
+        "to_tsquery",
+        "english",
+        PostgresSearchProvider.webSearchQuery(remainder)
+      );
+
+      // a remainder of only stop words gives an empty tsquery, which matches nothing.
+      conditions.push({
+        [Op.or]: [
+          Sequelize.fn(`"searchVector" @@`, remainderQuery),
+          Sequelize.where(Sequelize.fn("numnode", remainderQuery), 0),
+        ],
+      });
+    }
+
+    return { [Op.or]: [fullTextMatch, { [Op.and]: conditions }] };
+  }
+
+  /**
+   * Builds a condition that matches documents whose title or text contains
+   * the term as literal, case-insensitive text.
+   *
+   * @param term the term to match.
+   * @returns the where condition.
+   */
+  private static buildContainsMatch(term: string): WhereOptions<Document> {
+    const pattern = QueryHelper.likeContains(term);
+    return {
+      [Op.or]: [
+        { title: { [Op.iLike]: pattern } },
+        { text: { [Op.iLike]: pattern } },
+      ],
+    };
   }
 
   private static buildResponse({
@@ -802,19 +953,27 @@ export default class PostgresSearchProvider extends BaseSearchProvider {
     count: number;
   }): SearchResponse {
     return {
-      results: map(results, (result) => {
-        const document = find(documents, {
-          id: result.id,
-        }) as Document;
+      results: compact(
+        map(results, (result) => {
+          const document = find(documents, {
+            id: result.id,
+          });
 
-        return {
-          ranking: result.dataValues.searchRanking,
-          context: query
-            ? PostgresSearchProvider.buildResultContext(document, query)
-            : undefined,
-          document,
-        };
-      }),
+          // The ranked query may run on a read replica, so a document can be
+          // returned that has since been removed on the primary.
+          if (!document) {
+            return null;
+          }
+
+          return {
+            ranking: result.dataValues.searchRanking,
+            context: query
+              ? PostgresSearchProvider.buildResultContext(document, query)
+              : undefined,
+            document,
+          };
+        })
+      ),
       total: count,
     };
   }
@@ -827,9 +986,7 @@ export default class PostgresSearchProvider extends BaseSearchProvider {
    */
   public static webSearchQuery(query: string): string {
     // limit length of search queries as we're using regex against untrusted input
-    let limitedQuery = PostgresSearchProvider.escapeQuery(
-      query.slice(0, PostgresSearchProvider.maxQueryLength)
-    );
+    let limitedQuery = query.slice(0, PostgresSearchProvider.maxQueryLength);
 
     const quotedSearch =
       limitedQuery.startsWith('"') && limitedQuery.endsWith('"');
@@ -854,6 +1011,9 @@ export default class PostgresSearchProvider extends BaseSearchProvider {
       }
     }
 
+    // Escape only once the phrase delimiters above have settled.
+    limitedQuery = PostgresSearchProvider.escapeTsQuery(limitedQuery);
+
     return (
       queryParser()(
         // Although queryParser trims the query, looks like there's a
@@ -865,18 +1025,26 @@ export default class PostgresSearchProvider extends BaseSearchProvider {
         // combination, so we never hand to_tsquery an operator with no
         // operand (e.g. a tail of "&\" would leave a dangling "&").
         .replace(/[&\\]+$/, "")
+        // A leading single quote can also leave a join with no operand.
+        .replace(/^&+/, "")
     );
   }
 
-  private static escapeQuery(query: string): string {
-    return (
-      query
-        // replace "\" with escaped "\\" because sequelize.escape doesn't do it
-        // see: https://github.com/sequelize/sequelize/issues/2950
-        .replace(/\\/g, "\\\\")
-        // replace ":" with escaped "\:" because it's a reserved character in tsquery
-        // see: https://github.com/outline/outline/issues/6542
-        .replace(/:/g, "\\:")
+  /**
+   * Escapes the characters that are reserved in tsquery, segment by segment so
+   * that quoted phrases can be treated differently to the rest of the query.
+   *
+   * ":" only needs escaping inside a phrase, where pg-tsquery passes it through
+   * verbatim (see: https://github.com/outline/outline/issues/6542). Elsewhere
+   * pg-tsquery drops the colon but keeps a preceding backslash, which would
+   * leave to_tsquery with a dangling escape character.
+   */
+  private static escapeTsQuery(query: string): string {
+    return query.replace(/"[^"]*"|'[^']*'|[\s\S]/g, (segment) =>
+      // a match longer than the single character fallback is a quoted phrase
+      segment.length > 1
+        ? segment.replace(/[\\:]/g, "\\$&")
+        : segment.replace(/\\/g, "\\\\")
     );
   }
 

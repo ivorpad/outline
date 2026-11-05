@@ -1,5 +1,14 @@
+import { buildApiKey, buildTeam, buildUser } from "@server/test/factories";
+import { getTestServer } from "@server/test/support";
 import type { APIContext } from "@server/types";
-import { getExpectedOrigin } from "./passkeys";
+import { PasskeyBrand } from "@shared/utils/passkeys";
+import {
+  getExpectedOrigin,
+  getPasskeyLoginRedirect,
+  isUniqueAuthenticator,
+} from "./passkeys";
+
+const server = getTestServer();
 
 describe("getExpectedOrigin", () => {
   // Helper to mock APIContext for testing
@@ -85,5 +94,97 @@ describe("getExpectedOrigin", () => {
     });
 
     expect(getExpectedOrigin(ctx)).toBe("http://outline.example.com:8080");
+  });
+});
+
+describe("getPasskeyLoginRedirect", () => {
+  it("should redirect to the desktop passkey flow when client=desktop", () => {
+    expect(getPasskeyLoginRedirect("desktop")).toBe(
+      "/?method=passkey&client=desktop"
+    );
+  });
+
+  it("should default to the web client when client is missing", () => {
+    expect(getPasskeyLoginRedirect(undefined)).toBe(
+      "/?method=passkey&client=web"
+    );
+  });
+
+  it("should default to the web client when client is invalid", () => {
+    expect(getPasskeyLoginRedirect("bogus")).toBe(
+      "/?method=passkey&client=web"
+    );
+  });
+
+  it("should default to the web client when client is an array", () => {
+    expect(getPasskeyLoginRedirect(["desktop", "web"])).toBe(
+      "/?method=passkey&client=web"
+    );
+  });
+});
+
+describe("isUniqueAuthenticator", () => {
+  it("should be true for a known authenticator", () => {
+    expect(isUniqueAuthenticator(PasskeyBrand.OnePassword)).toBe(true);
+  });
+
+  it("should be false for the Chromium authenticator", () => {
+    expect(isUniqueAuthenticator(PasskeyBrand.ChromiumBrowser)).toBe(false);
+  });
+
+  it("should be false for a missing or zero AAGUID", () => {
+    expect(isUniqueAuthenticator(undefined)).toBe(false);
+    expect(isUniqueAuthenticator("00000000-0000-0000-0000-000000000000")).toBe(
+      false
+    );
+  });
+});
+
+describe("#passkeys.generateRegistrationOptions", () => {
+  it("should return registration options for a session", async () => {
+    const team = await buildTeam({ passkeysEnabled: true });
+    const user = await buildUser({ teamId: team.id });
+    const res = await server.post(
+      "/auth/passkeys.generateRegistrationOptions",
+      user
+    );
+    const body = await res.json();
+
+    expect(res.status).toEqual(200);
+    expect(body.data.challenge).toBeTruthy();
+  });
+
+  it("should not allow an API key", async () => {
+    const team = await buildTeam({ passkeysEnabled: true });
+    const user = await buildUser({ teamId: team.id });
+    const apiKey = await buildApiKey({ userId: user.id });
+    const res = await server.post(
+      "/auth/passkeys.generateRegistrationOptions",
+      {
+        headers: { authorization: `Bearer ${apiKey.value}` },
+      }
+    );
+
+    const body = await res.json();
+
+    expect(res.status).toEqual(403);
+    expect(body.message).toEqual("Invalid authentication type");
+  });
+});
+
+describe("#passkeys.verifyRegistration", () => {
+  it("should not allow an API key", async () => {
+    const team = await buildTeam({ passkeysEnabled: true });
+    const user = await buildUser({ teamId: team.id });
+    const apiKey = await buildApiKey({ userId: user.id });
+    const res = await server.post("/auth/passkeys.verifyRegistration", {
+      headers: { authorization: `Bearer ${apiKey.value}` },
+      body: {},
+    });
+
+    const body = await res.json();
+
+    expect(res.status).toEqual(403);
+    expect(body.message).toEqual("Invalid authentication type");
   });
 });

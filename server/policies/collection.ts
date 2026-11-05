@@ -1,8 +1,16 @@
 import invariant from "invariant";
-import { CollectionPermission } from "@shared/types";
+import { CollectionPermission, TeamPreference } from "@shared/types";
 import { Collection, User, Team } from "@server/models";
-import { allow } from "./cancan";
-import { and, isTeamAdmin, isTeamModel, isTeamMutable, or } from "./utils";
+import { allow, can } from "./cancan";
+import {
+  and,
+  isCollectionOwner,
+  isCollectionWritable,
+  isTeamAdmin,
+  isTeamModel,
+  isTeamMutable,
+  or,
+} from "./utils";
 
 allow(User, "createCollection", Team, (actor, team) =>
   and(
@@ -22,10 +30,20 @@ allow(User, "importCollection", Team, (actor, team) =>
   )
 );
 
+allow(User, "createPersonalCollection", Team, (actor, team) =>
+  and(
+    !actor.isGuest,
+    !actor.isViewer,
+    isTeamModel(actor, team),
+    isTeamMutable(actor),
+    !!team?.getPreference(TeamPreference.PersonalDocs)
+  )
+);
+
 allow(User, "move", Collection, (actor, collection) =>
   and(
-    //
     !!collection?.isActive,
+    !collection?.isPersonal,
     isTeamAdmin(actor, collection),
     isTeamMutable(actor)
   )
@@ -34,6 +52,9 @@ allow(User, "move", Collection, (actor, collection) =>
 allow(User, "read", Collection, (user, collection) => {
   if (!collection || user.teamId !== collection.teamId) {
     return false;
+  }
+  if (collection.isPersonal) {
+    return isCollectionOwner(user, collection);
   }
   if (user.isAdmin) {
     return true;
@@ -46,13 +67,45 @@ allow(User, "read", Collection, (user, collection) => {
   return true;
 });
 
+allow(User, "duplicate", Collection, (actor, collection) =>
+  and(
+    !!collection?.isActive,
+    !collection?.isPersonal,
+    can(actor, "read", collection),
+    can(actor, "createCollection", actor.team)
+  )
+);
+
+allow(User, "download", Collection, (actor, collection) =>
+  and(
+    can(actor, "read", collection),
+    or(
+      and(!actor.isGuest, !actor.isViewer),
+      !!actor.team.getPreference(TeamPreference.ViewersCanExport)
+    )
+  )
+);
+
+// A personal collection cannot be starred, as it has no page to link to.
+allow(User, ["star", "unstar"], Collection, (user, collection) =>
+  and(
+    //
+    !collection?.isPersonal,
+    can(user, "readDocument", collection)
+  )
+);
+
 allow(
   User,
-  ["readDocument", "star", "unstar", "subscribe", "unsubscribe"],
+  ["readDocument", "subscribe", "unsubscribe"],
   Collection,
   (user, collection) => {
     if (!collection || user.teamId !== collection.teamId) {
       return false;
+    }
+
+    if (collection.isPersonal) {
+      return isCollectionOwner(user, collection);
     }
 
     if (collection.isPrivate || user.isGuest) {
@@ -66,7 +119,15 @@ allow(
   }
 );
 
-allow(User, "share", Collection, (user, collection) => {
+allow(User, "share", Collection, (user, collection) =>
+  and(
+    //
+    !collection?.isPersonal,
+    can(user, "shareDocument", collection)
+  )
+);
+
+allow(User, "shareDocument", Collection, (user, collection) => {
   if (
     !collection ||
     user.isGuest ||
@@ -77,6 +138,9 @@ allow(User, "share", Collection, (user, collection) => {
   }
   if (!collection.sharing) {
     return false;
+  }
+  if (collection.isPersonal) {
+    return isCollectionOwner(user, collection);
   }
   if (!collection.isPrivate && user.isAdmin) {
     return true;
@@ -96,8 +160,16 @@ allow(User, "share", Collection, (user, collection) => {
 });
 
 allow(User, "updateDocument", Collection, (user, collection) => {
-  if (!collection || !isTeamModel(user, collection) || !isTeamMutable(user)) {
+  if (
+    !collection ||
+    !isTeamModel(user, collection) ||
+    !isTeamMutable(user) ||
+    !isCollectionWritable(user, collection)
+  ) {
     return false;
+  }
+  if (collection.isPersonal) {
+    return isCollectionOwner(user, collection);
   }
 
   if (
@@ -123,9 +195,13 @@ allow(
       !collection ||
       !collection.isActive ||
       !isTeamModel(user, collection) ||
-      !isTeamMutable(user)
+      !isTeamMutable(user) ||
+      !isCollectionWritable(user, collection)
     ) {
       return false;
+    }
+    if (collection.isPersonal) {
+      return isCollectionOwner(user, collection);
     }
 
     if (
@@ -153,15 +229,19 @@ allow(
       !!collection?.isActive,
       isTeamModel(user, collection),
       isTeamMutable(user),
+      // Templates in a personal collection would only be visible to its owner.
+      !collection?.isPersonal,
       or(
         isTeamAdmin(user, collection),
         includesMembership(collection, [CollectionPermission.Admin]),
         and(
           collection?.templateManagement === CollectionPermission.ReadWrite,
-          !user.isViewer,
           !user.isGuest,
           or(
-            collection?.permission === CollectionPermission.ReadWrite,
+            and(
+              collection?.permission === CollectionPermission.ReadWrite,
+              !user.isViewer
+            ),
             includesMembership(collection, [
               CollectionPermission.ReadWrite,
               CollectionPermission.Admin,
@@ -172,11 +252,57 @@ allow(
     )
 );
 
-allow(User, ["update", "export", "archive"], Collection, (user, collection) =>
+allow(User, "update", Collection, (user, collection) =>
+  and(
+    isTeamModel(user, collection),
+    !!collection?.isActive,
+    isOwnerIfPersonal(user, collection),
+    or(
+      isCollectionOwner(user, collection),
+      isTeamAdmin(user, collection),
+      includesMembership(collection, [CollectionPermission.Admin])
+    )
+  )
+);
+
+// A personal collection cannot be archived or deleted, so that its owner always
+// has exactly one.
+allow(User, "archive", Collection, (user, collection) =>
+  and(
+    //
+    !collection?.isPersonal,
+    can(user, "update", collection)
+  )
+);
+
+// Pins are shown on the collection page, which a personal collection does not
+// have.
+allow(User, "pin", Collection, (user, collection) =>
+  and(
+    //
+    !collection?.isPersonal,
+    can(user, "update", collection)
+  )
+);
+
+// Only the owner is a member of a personal collection, documents in it are
+// shared through document memberships instead.
+allow(User, "manageUsers", Collection, (user, collection) =>
+  and(
+    //
+    !collection?.isPersonal,
+    can(user, "update", collection)
+  )
+);
+
+allow(User, "export", Collection, (user, collection) =>
   and(
     !!collection,
     !!collection?.isActive,
+    can(user, "download", collection),
+    isOwnerIfPersonal(user, collection),
     or(
+      isCollectionOwner(user, collection),
       isTeamAdmin(user, collection),
       includesMembership(collection, [CollectionPermission.Admin])
     )
@@ -184,13 +310,21 @@ allow(User, ["update", "export", "archive"], Collection, (user, collection) =>
 );
 
 allow(User, ["hide", "unhide"], Collection, (user, collection) =>
-  and(!!collection, !!collection?.isActive, isTeamAdmin(user, collection))
+  and(
+    !!collection,
+    !!collection?.isActive,
+    // A personal collection is only visible to its owner, so there is
+    // nothing for an admin to hide.
+    !collection?.isPersonal,
+    isTeamAdmin(user, collection)
+  )
 );
 
 allow(User, "delete", Collection, (user, collection) =>
   and(
-    !!collection,
+    isTeamModel(user, collection),
     !collection?.deletedAt,
+    !collection?.isPersonal,
     or(
       isTeamAdmin(user, collection),
       includesMembership(collection, [CollectionPermission.Admin])
@@ -200,14 +334,38 @@ allow(User, "delete", Collection, (user, collection) =>
 
 allow(User, "restore", Collection, (user, collection) =>
   and(
-    !!collection,
+    isTeamModel(user, collection),
     !collection?.isActive,
+    isOwnerIfPersonal(user, collection),
     or(
+      isCollectionOwner(user, collection),
       isTeamAdmin(user, collection),
       includesMembership(collection, [CollectionPermission.Admin])
     )
   )
 );
+
+allow(User, "updateDeprecatedReason", Collection, (actor, collection) =>
+  and(
+    !!collection?.archivedAt,
+    !collection?.deletedAt,
+    isTeamModel(actor, collection),
+    isTeamMutable(actor),
+    can(actor, "restore", collection)
+  )
+);
+
+/**
+ * Check that the actor owns the collection when it is a personal collection.
+ * Admins have no access to the personal collections of other users.
+ *
+ * @param user The actor to check.
+ * @param collection The collection to check.
+ * @returns True if the collection is not personal or the actor owns it.
+ */
+function isOwnerIfPersonal(user: User, collection: Collection | null) {
+  return !collection?.isPersonal || isCollectionOwner(user, collection);
+}
 
 function includesMembership(
   collection: Collection | null,

@@ -1,4 +1,5 @@
-import Router from "koa-router";
+import Router from "@koa/router";
+import { toError } from "@shared/utils/error";
 import { IntegrationService, IntegrationType } from "@shared/types";
 import { ValidationError } from "@server/errors";
 import Logger from "@server/logging/Logger";
@@ -7,6 +8,7 @@ import auth from "@server/middlewares/authentication";
 import { transaction } from "@server/middlewares/transaction";
 import validate from "@server/middlewares/validate";
 import { IntegrationAuthentication, Integration } from "@server/models";
+import { authorize } from "@server/policies";
 import type { APIContext } from "@server/types";
 import { verifyOAuthStateNonce } from "@server/utils/oauth";
 import { Linear } from "../linear";
@@ -53,6 +55,7 @@ router.get(
     }
 
     verifyOAuthStateNonce(ctx, LinearOAuthNonceCookie, parsedState.nonce);
+    authorize(user, "createIntegration", user.team);
 
     try {
       // validation middleware ensures that code is non-null at this point.
@@ -88,7 +91,7 @@ router.get(
                 id: workspace.id,
                 name: workspace.name,
                 key: workspace.urlKey,
-                logoUrl: workspace.logoUrl,
+                logoUrl: workspace.logoUrl ?? undefined,
               },
             },
           },
@@ -107,7 +110,10 @@ router.get(
 
       ctx.redirect(LinearUtils.successUrl());
     } catch (err) {
-      Logger.error("Encountered error during Linear OAuth callback", err);
+      Logger.error(
+        "Encountered error during Linear OAuth callback",
+        toError(err)
+      );
       ctx.redirect(LinearUtils.errorUrl("unknown"));
     }
   }

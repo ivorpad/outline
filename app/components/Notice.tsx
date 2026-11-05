@@ -6,12 +6,18 @@ import Text from "./Text";
 
 type Props = {
   children?: React.ReactNode;
-  icon?: JSX.Element;
-  description?: JSX.Element;
+  icon?: React.JSX.Element;
+  description?: React.JSX.Element;
+  className?: string;
 };
 
-const Notice: React.FC<Props> = ({ children, icon, description }: Props) => (
-  <Container as="div">
+const Notice: React.FC<Props> = ({
+  children,
+  icon,
+  description,
+  className,
+}: Props) => (
+  <Container as="div" className={className}>
     <Flex as="span" gap={8}>
       {icon}
       <span>
@@ -28,17 +34,17 @@ const Notice: React.FC<Props> = ({ children, icon, description }: Props) => (
 );
 
 const Title = styled.span`
+  color: ${s("textSecondary")};
   font-weight: 500;
   font-size: 16px;
 `;
 
-const Container = styled(Text)`
+const Container = styled(Text).attrs({ size: "small" })`
   background: ${s("sidebarBackground")};
-  color: ${s("sidebarText")};
+  color: ${s("textTertiary")};
   padding: 10px 12px;
   border-radius: 4px;
   position: relative;
-  font-size: 14px;
   margin: 1em 0;
 
   svg {

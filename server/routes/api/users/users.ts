@@ -1,7 +1,6 @@
-import Router from "koa-router";
+import Router from "@koa/router";
 import type { WhereOptions } from "sequelize";
 import { Op, Sequelize } from "sequelize";
-import type { UserPreferences } from "@shared/types";
 import { NotificationEventType, UserRole } from "@shared/types";
 import { UserRoleHelper } from "@shared/utils/UserRoleHelper";
 import { settingsPath } from "@shared/utils/routeHelpers";
@@ -11,19 +10,27 @@ import ConfirmUpdateEmail from "@server/emails/templates/ConfirmUpdateEmail";
 import ConfirmUserDeleteEmail from "@server/emails/templates/ConfirmUserDeleteEmail";
 import InviteEmail from "@server/emails/templates/InviteEmail";
 import env from "@server/env";
-import { ValidationError } from "@server/errors";
+import { AuthorizationError, ValidationError } from "@server/errors";
 import logger from "@server/logging/Logger";
 import auth from "@server/middlewares/authentication";
 import { rateLimiter } from "@server/middlewares/rateLimiter";
 import { transaction } from "@server/middlewares/transaction";
 import validate from "@server/middlewares/validate";
 import { User, Team } from "@server/models";
+import {
+  buildWhere,
+  combineFilters,
+  hasFieldInFilter,
+  legacyUserParamsToFilter,
+} from "@server/models/helpers/Filters";
 import { UserFlag } from "@server/models/User";
 import { can, authorize } from "@server/policies";
 import { presentUser, presentPolicies } from "@server/presenters";
 import type { APIContext } from "@server/types";
+import { AuthenticationType } from "@server/types";
 import { RateLimiterStrategy } from "@server/utils/RateLimiter";
 import { safeEqual } from "@server/utils/crypto";
+import { QueryHelper } from "@server/storage/QueryHelper";
 import { getDetailsForEmailUpdateToken } from "@server/utils/jwt";
 import pagination from "../middlewares/pagination";
 import * as T from "./schema";
@@ -36,135 +43,96 @@ router.post(
   pagination(),
   validate(T.UsersListSchema),
   async (ctx: APIContext<T.UsersListReq>) => {
-    const { sort, direction, query, role, filter, ids, emails } =
-      ctx.input.body;
+    const {
+      sort,
+      direction,
+      query,
+      role,
+      filter: statusFilter,
+      ids,
+      emails,
+      filters: rawFilters,
+    } = ctx.input.body;
 
     const actor = ctx.state.auth.user;
-    let where: WhereOptions<User> = {
+    authorize(actor, "listUsers", actor.team);
+
+    const where: WhereOptions<User> & {
+      [Op.and]: WhereOptions<User>[];
+    } = {
       teamId: actor.teamId,
+      [Op.and]: [],
     };
 
-    // Filter out suspended users if we're not an admin
-    if (!actor.isAdmin) {
-      where = {
-        ...where,
-        suspendedAt: {
-          [Op.eq]: null,
-        },
-      };
-    }
-
-    switch (filter) {
-      case "invited": {
-        where = { ...where, lastActiveAt: null };
-        break;
-      }
-
-      case "viewers": {
-        where = { ...where, role: UserRole.Viewer };
-        break;
-      }
-
-      case "admins": {
-        where = { ...where, role: UserRole.Admin };
-        break;
-      }
-
-      case "members": {
-        where = { ...where, role: UserRole.Member };
-        break;
-      }
-
-      case "suspended": {
-        if (actor.isAdmin) {
-          where = {
-            ...where,
-            suspendedAt: {
-              [Op.ne]: null,
-            },
-          };
-        }
-        break;
-      }
-
-      case "active": {
-        where = {
-          ...where,
-          lastActiveAt: {
-            [Op.ne]: null,
-          },
-          suspendedAt: {
-            [Op.is]: null,
-          },
-        };
-        break;
-      }
-
-      case "all": {
-        break;
-      }
-
-      default: {
-        where = {
-          ...where,
-          suspendedAt: {
-            [Op.is]: null,
-          },
-        };
-        break;
-      }
-    }
-
-    if (role) {
-      where = {
-        ...where,
+    // The schema rejects callers that combine `filters` with the deprecated
+    // top-level params, so exactly one of these is set.
+    const filter =
+      combineFilters(rawFilters) ??
+      legacyUserParamsToFilter({
+        ids,
+        emails,
         role,
-      };
+        status: statusFilter,
+        isAdmin: actor.isAdmin,
+      });
+
+    // Suspended users are only ever visible to admins, and then only when the
+    // request targets a specific status or references suspendedAt itself.
+    const includeSuspended =
+      actor.isAdmin &&
+      (!!statusFilter ||
+        (filter !== undefined && hasFieldInFilter(filter, "suspendedAt")));
+    if (!includeSuspended) {
+      where[Op.and].push({ suspendedAt: { [Op.is]: null } });
+    }
+
+    // Filtering or sorting by email would reveal addresses the actor may not see.
+    const canReadEmails = can(actor, "readEmail", actor.team);
+    if (
+      !canReadEmails &&
+      (sort === "email" ||
+        (filter !== undefined && hasFieldInFilter(filter, "email")))
+    ) {
+      throw AuthorizationError();
+    }
+
+    if (filter) {
+      where[Op.and].push(buildWhere<User>(filter));
     }
 
     if (query) {
-      where = {
-        ...where,
-        [Op.and]: {
-          [Op.or]: [
-            Sequelize.literal(
-              `unaccent(LOWER(email)) like unaccent(LOWER(:query))`
-            ),
-            Sequelize.literal(
-              `unaccent(LOWER(name)) like unaccent(LOWER(:query))`
-            ),
-          ],
-        },
-      };
+      where[Op.and].push({
+        [Op.or]: [
+          ...(canReadEmails
+            ? [
+                Sequelize.literal(
+                  `unaccent(LOWER("user"."email")) like unaccent(LOWER(:query))`
+                ),
+              ]
+            : []),
+          Sequelize.literal(
+            `unaccent(LOWER("user"."name")) like unaccent(LOWER(:query))`
+          ),
+        ],
+      });
     }
 
-    if (ids) {
-      where = {
-        ...where,
-        id: ids,
-      };
-    }
-
-    if (emails) {
-      where = {
-        ...where,
-        email: emails,
-      };
-    }
-
-    const replacements = { query: `%${query}%` };
+    const replacements = { query: QueryHelper.likeContains(query ?? "") };
 
     const [users, total] = await Promise.all([
       User.findAll({
         where,
         replacements,
+        // Only admins can see who invited a user.
+        include: actor.isAdmin
+          ? [{ association: "invitedBy", required: false }]
+          : undefined,
         order: [[sort, direction]],
         offset: ctx.state.pagination.offset,
         limit: ctx.state.pagination.limit,
       }),
       User.count({
         where,
-        // @ts-expect-error Types are incorrect for count
         replacements,
       }),
     ]);
@@ -205,11 +173,11 @@ router.post(
 router.post(
   "users.updateEmail",
   rateLimiter(RateLimiterStrategy.TenPerHour),
-  auth(),
+  auth({ type: AuthenticationType.APP }),
   validate(T.UsersUpdateEmailSchema),
   async (ctx: APIContext<T.UsersUpdateEmailReq>) => {
     if (!env.EMAIL_ENABLED) {
-      throw ValidationError("Email support is not setup for this instance");
+      throw ValidationError("Email support is not set up for this instance");
     }
 
     const { user: actor } = ctx.state.auth;
@@ -247,12 +215,12 @@ router.post(
 router.get(
   "users.updateEmail",
   rateLimiter(RateLimiterStrategy.TenPerHour),
-  auth(),
+  auth({ type: AuthenticationType.APP }),
   transaction(),
   validate(T.UsersUpdateEmailConfirmSchema),
   async (ctx: APIContext<T.UsersUpdateEmailConfirmReq>) => {
     if (!env.EMAIL_ENABLED) {
-      throw ValidationError("Email support is not setup for this instance");
+      throw ValidationError("Email support is not set up for this instance");
     }
 
     const { transaction } = ctx.state;
@@ -335,7 +303,7 @@ router.post(
     if (preferences) {
       user.preferences = {
         ...user.preferences,
-        ...(preferences as UserPreferences),
+        ...preferences,
       };
     }
     if (timezone) {
@@ -417,10 +385,11 @@ async function updateRole(ctx: APIContext<T.UsersChangeRoleReq>) {
   const actor = ctx.state.auth.user;
 
   const user = await User.findByPk(userId, {
-    rejectOnEmpty: true,
     transaction,
     lock: transaction.LOCK.UPDATE,
   });
+  authorize(actor, "update", user);
+
   await Team.findByPk(user.teamId, {
     transaction,
     lock: transaction.LOCK.UPDATE,
@@ -442,6 +411,9 @@ async function updateRole(ctx: APIContext<T.UsersChangeRoleReq>) {
   if (UserRoleHelper.canPromote(user, role)) {
     name = "promote";
     authorize(actor, "promote", user);
+  }
+  if (role === UserRole.Guest) {
+    authorize(actor, "addGuest", actor.team);
   }
 
   await user.updateWithCtx(ctx, { role }, { name });
@@ -614,7 +586,7 @@ router.post(
   auth(),
   async (ctx: APIContext) => {
     if (!env.EMAIL_ENABLED) {
-      throw ValidationError("Email support is not setup for this instance");
+      throw ValidationError("Email support is not set up for this instance");
     }
 
     const { user } = ctx.state.auth;

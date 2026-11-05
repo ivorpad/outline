@@ -1,16 +1,17 @@
 import { compact } from "es-toolkit/compat";
 import { observer } from "mobx-react";
-import { GroupIcon, HiddenIcon } from "outline-icons";
+import { HiddenIcon } from "outline-icons";
 import * as React from "react";
 import { useCallback, useMemo } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { useHistory } from "react-router-dom";
 import styled, { useTheme } from "styled-components";
 import { MAX_AVATAR_DISPLAY } from "@shared/constants";
-import { s, hover } from "@shared/styles";
+import { hover } from "@shared/styles";
 import type Group from "~/models/Group";
 import Facepile from "~/components/Facepile";
 import Flex from "~/components/Flex";
+import { ResolvedGroupIcon } from "~/components/Icons/GroupIcon";
 import { HEADER_HEIGHT } from "~/components/Header";
 import {
   type Props as TableProps,
@@ -18,11 +19,14 @@ import {
 } from "~/components/SortableTable";
 import { type Column as TableColumn } from "~/components/Table";
 import { ContextMenu } from "~/components/Menu/ContextMenu";
+import { ActionContextProvider } from "~/hooks/useActionContext";
 import { useGroupMenuActions } from "~/hooks/useGroupMenuActions";
 import Text from "~/components/Text";
 import Time from "~/components/Time";
 import GroupMenu from "~/menus/GroupMenu";
+import useStores from "~/hooks/useStores";
 import { FILTER_HEIGHT } from "./StickyFilters";
+import GroupSelectionToolbar from "./GroupSelectionToolbar";
 import NudeButton from "~/components/NudeButton";
 import { AvatarSize } from "~/components/Avatar";
 import { HStack } from "~/components/primitives/HStack";
@@ -43,11 +47,13 @@ const GroupRowContextMenu = observer(function GroupRowContextMenu({
   menuLabel: string;
   children: React.ReactNode;
 }) {
-  const action = useGroupMenuActions(group);
+  const action = useGroupMenuActions();
   return (
-    <ContextMenu action={action} ariaLabel={menuLabel}>
-      {children}
-    </ContextMenu>
+    <ActionContextProvider value={{ activeModels: [group] }}>
+      <ContextMenu action={action} ariaLabel={menuLabel}>
+        {children}
+      </ContextMenu>
+    </ActionContextProvider>
   );
 });
 
@@ -55,6 +61,12 @@ export function GroupsTable(props: Props) {
   const { t } = useTranslation();
   const theme = useTheme();
   const history = useHistory();
+  const { policies } = useStores();
+
+  const isRowSelectable = useCallback(
+    (group: Group) => !!policies.abilities(group.id).delete,
+    [policies]
+  );
 
   const handleViewMembers = useCallback(
     (group: Group) => {
@@ -81,11 +93,11 @@ export function GroupsTable(props: Props) {
           header: t("Name"),
           accessor: (group) => group.name,
           component: (group) => (
-            <HStack>
+            <HStack spacing={6}>
               <Image>
-                <GroupIcon size={24} />
+                <ResolvedGroupIcon group={group} size={24} />
               </Image>
-              <Flex column>
+              <NameColumn column>
                 <Title onClick={() => handleViewMembers(group)}>
                   {group.name}
                   {group.disableMentions && (
@@ -97,26 +109,13 @@ export function GroupsTable(props: Props) {
                     </>
                   )}
                 </Title>
-                <Text type="tertiary" size="small" weight="normal">
-                  <Trans
-                    defaults="{{ count }} member"
-                    values={{ count: group.memberCount }}
-                  />
-                </Text>
-              </Flex>
+                {group.description && (
+                  <Text type="tertiary" size="small" weight="normal" ellipsis>
+                    {group.description}
+                  </Text>
+                )}
+              </NameColumn>
             </HStack>
-          ),
-          width: "2fr",
-        },
-        {
-          type: "data",
-          id: "description",
-          header: t("Description"),
-          accessor: (group) => group.description || "",
-          component: (group) => (
-            <Text type="secondary" size="small" weight="normal">
-              {group.description}
-            </Text>
           ),
           width: "2fr",
         },
@@ -197,10 +196,13 @@ export function GroupsTable(props: Props) {
 
   return (
     <SortableTable
+      id="groups"
       columns={columns}
       rowHeight={ROW_HEIGHT}
       stickyOffset={STICKY_OFFSET}
       decorateRow={applyContextMenu}
+      isRowSelectable={isRowSelectable}
+      selectionToolbar={<GroupSelectionToolbar />}
       {...props}
     />
   );
@@ -214,10 +216,13 @@ const GroupMembers = styled(NudeButton)`
 const Image = styled(Flex)`
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
-  background: ${s("backgroundSecondary")};
-  border-radius: 32px;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+`;
+
+const NameColumn = styled(Flex)`
+  min-width: 0;
 `;
 
 const Title = styled.span`

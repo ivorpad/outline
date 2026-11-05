@@ -1,9 +1,9 @@
-/* oxlint-disable lines-between-class-members */
 import fractionalIndex from "fractional-index";
-import { find, findIndex, isNil, remove, uniq } from "es-toolkit/compat";
+import { find, findIndex, isNil, keyBy, remove, uniq } from "es-toolkit/compat";
 import type {
   Identifier,
   Transaction,
+  DestroyOptions,
   FindOptions,
   NonNullFindOptions,
   InferAttributes,
@@ -50,14 +50,18 @@ import type {
   SourceMetadata,
   NavigationNode,
 } from "@shared/types";
-import { CollectionPermission } from "@shared/types";
+import { CollectionPermission, NavigationNodeType } from "@shared/types";
 import { UrlHelper } from "@shared/utils/UrlHelper";
 import { sortNavigationNodes } from "@shared/utils/collections";
 import slugify from "@shared/utils/slugify";
-import { CollectionValidation } from "@shared/validations";
+import {
+  CollectionValidation,
+  DeprecationValidation,
+} from "@shared/validations";
 import { parser } from "@server/editor";
 import { ValidationError } from "@server/errors";
 import type { APIContext } from "@server/types";
+import { LockHelper } from "@server/storage/LockHelper";
 import { CacheHelper } from "@server/utils/CacheHelper";
 import { RedisPrefixHelper } from "@server/utils/RedisPrefixHelper";
 import removeIndexCollision from "@server/utils/removeIndexCollision";
@@ -73,7 +77,6 @@ import Team from "./Team";
 import User from "./User";
 import UserMembership from "./UserMembership";
 import ParanoidModel from "./base/ParanoidModel";
-import Fix from "./decorators/Fix";
 import { DocumentHelper } from "./helpers/DocumentHelper";
 import IsHexColor from "./validators/IsHexColor";
 import Length from "./validators/Length";
@@ -198,7 +201,6 @@ type AdditionalFindOptions = {
   },
 }))
 @Table({ tableName: "collections", modelName: "collection" })
-@Fix
 class Collection extends ParanoidModel<
   InferAttributes<Collection>,
   Partial<InferCreationAttributes<Collection>>
@@ -209,7 +211,7 @@ class Collection extends ParanoidModel<
     msg: `urlId must be 10 characters`,
   })
   @Unique
-  @Column
+  @Column(DataType.STRING)
   urlId: string;
 
   @NotContainsUrl
@@ -217,7 +219,7 @@ class Collection extends ParanoidModel<
     max: CollectionValidation.maxNameLength,
     msg: `name must be ${CollectionValidation.maxNameLength} characters or less`,
   })
-  @Column
+  @Column(DataType.STRING)
   name: string;
 
   /**
@@ -230,8 +232,13 @@ class Collection extends ParanoidModel<
     max: CollectionValidation.maxDescriptionLength,
     msg: `description must be ${CollectionValidation.maxDescriptionLength} characters or less`,
   })
-  @Column
+  @Column(DataType.STRING)
   description: string | null;
+
+  /** The reason this collection is archived. */
+  @Length({ max: DeprecationValidation.maxReasonLength })
+  @Column(DataType.TEXT)
+  deprecatedReason: string | null;
 
   /**
    * The content of the collection as JSON, this is a snapshot at the last time the state was saved.
@@ -240,19 +247,19 @@ class Collection extends ParanoidModel<
   content: ProsemirrorData | null;
 
   /** An icon (or) emoji to use as the collection icon. */
-  @Column
+  @Column(DataType.STRING)
   icon: string | null;
 
   /** The color of the icon. */
   @IsHexColor
-  @Column
+  @Column(DataType.STRING)
   color: string | null;
 
   @Length({
     max: ValidateIndex.maxLength,
     msg: `index must be ${ValidateIndex.maxLength} characters or less`,
   })
-  @Column
+  @Column(DataType.STRING)
   index: string | null;
 
   @IsIn([Object.values(CollectionPermission)])
@@ -260,7 +267,7 @@ class Collection extends ParanoidModel<
   permission: CollectionPermission | null;
 
   @Default(false)
-  @Column
+  @Column(DataType.BOOLEAN)
   maintainerApprovalRequired: boolean;
 
   @Default(null)
@@ -268,11 +275,11 @@ class Collection extends ParanoidModel<
   documentStructure: NavigationNode[] | null;
 
   @Default(true)
-  @Column
+  @Column(DataType.BOOLEAN)
   sharing: boolean;
 
   @Default(false)
-  @Column
+  @Column(DataType.BOOLEAN)
   hidden: boolean;
 
   @Default({ field: "title", direction: "asc" })
@@ -303,7 +310,7 @@ class Collection extends ParanoidModel<
 
   /** Whether the collection is archived, and if so when. */
   @IsDate
-  @Column
+  @Column(DataType.DATE)
   archivedAt: Date | null;
 
   /** The minimum permission level required to manage templates in this collection. */
@@ -415,11 +422,19 @@ class Collection extends ParanoidModel<
   }
 
   @BeforeDestroy
-  static async checkLastCollection(model: Collection) {
+  static async checkLastCollection(model: Collection, options: DestroyOptions) {
+    await LockHelper.acquire(
+      model.sequelize,
+      `collections:${model.teamId}`,
+      options.transaction
+    );
+
     const total = await this.count({
       where: {
         teamId: model.teamId,
+        ownerId: null,
       },
+      transaction: options.transaction,
     });
     if (total === 1) {
       throw ValidationError("Cannot delete last collection");
@@ -428,9 +443,12 @@ class Collection extends ParanoidModel<
 
   @BeforeDestroy
   static async deleteDocuments(model: Collection, ctx: APIContext["context"]) {
+    // A bulk update rather than a destroy per document, so `deletedById` is
+    // written here instead of by the hook on ParanoidModel.
     await Document.update(
       {
         lastModifiedById: ctx.auth.user.id,
+        deletedById: ctx.auth.user.id,
         deletedAt: new Date(),
       },
       {
@@ -502,6 +520,19 @@ class Collection extends ParanoidModel<
   }
 
   @BeforeUpdate
+  static checkPersonal(model: Collection) {
+    if (!model.ownerId) {
+      return;
+    }
+    if (model.changed("name")) {
+      throw ValidationError("A personal collection cannot be renamed");
+    }
+    if (model.changed("permission") && model.permission) {
+      throw ValidationError("A personal collection must stay private");
+    }
+  }
+
+  @BeforeUpdate
   static async checkIndex(
     model: Collection,
     options: UpdateOptions<Collection>
@@ -555,6 +586,15 @@ class Collection extends ParanoidModel<
   @ForeignKey(() => User)
   @Column(DataType.UUID)
   archivedById?: string | null;
+
+  /** The user that owns this collection, if it is a personal collection. */
+  @BelongsTo(() => User, "ownerId")
+  owner?: User | null;
+
+  @AllowNull
+  @ForeignKey(() => User)
+  @Column(DataType.UUID)
+  ownerId: string | null;
 
   @HasMany(() => Document, "collectionId")
   documents: Document[];
@@ -659,6 +699,13 @@ class Collection extends ParanoidModel<
     options: FindOptions<Collection> & AdditionalFindOptions = {}
   ): Promise<Collection | null> {
     if (typeof id !== "string") {
+      if (options.rejectOnEmpty) {
+        throw options.rejectOnEmpty instanceof Error
+          ? options.rejectOnEmpty
+          : new EmptyResultError(
+              `Collection doesn't exist with id: ${String(id)}`
+            );
+      }
       return null;
     }
 
@@ -686,40 +733,34 @@ class Collection extends ParanoidModel<
 
     const scope = this.scope(scopes);
 
+    let collection: Collection | null = null;
+    const match = id.match(UrlHelper.SLUG_URL_REGEX);
+
     if (isUUID(id)) {
-      const collection = await scope.findOne({
+      collection = await scope.findOne({
+        ...rest,
         where: {
           id,
         },
-        ...rest,
         rejectOnEmpty: false,
       });
-
-      if (!collection && rest.rejectOnEmpty) {
-        throw new EmptyResultError(`Collection doesn't exist with id: ${id}`);
-      }
-
-      return collection;
-    }
-
-    const match = id.match(UrlHelper.SLUG_URL_REGEX);
-    if (match) {
-      const collection = await scope.findOne({
+    } else if (match) {
+      collection = await scope.findOne({
+        ...rest,
         where: {
           urlId: match[1],
         },
-        ...rest,
         rejectOnEmpty: false,
       });
-
-      if (!collection && rest.rejectOnEmpty) {
-        throw new EmptyResultError(`Collection doesn't exist with id: ${id}`);
-      }
-
-      return collection;
     }
 
-    return null;
+    if (!collection && rest.rejectOnEmpty) {
+      throw rest.rejectOnEmpty instanceof Error
+        ? rest.rejectOnEmpty
+        : new EmptyResultError(`Collection doesn't exist with id: ${id}`);
+    }
+
+    return collection;
   }
 
   /**
@@ -737,6 +778,7 @@ class Collection extends ParanoidModel<
     return this.findOne({
       where: {
         teamId: user.teamId,
+        ownerId: null,
         id,
       },
       order: [
@@ -749,6 +791,81 @@ class Collection extends ParanoidModel<
   }
 
   /**
+   * Find the personal collection of a user, with the memberships of the user
+   * loaded.
+   *
+   * @param user The user that owns the collection.
+   * @param options Additional options for the query.
+   * @returns the personal collection, or null if the user has none.
+   */
+  static async findPersonal(
+    user: User,
+    options: Omit<FindOptions<Collection>, "where"> = {}
+  ) {
+    return this.scope([
+      "defaultScope",
+      { method: ["withMembership", user.id] },
+    ]).findOne({
+      ...options,
+      where: {
+        teamId: user.teamId,
+        ownerId: user.id,
+      },
+    });
+  }
+
+  /**
+   * Find the personal collection of the user in the context, and create it if
+   * the user does not have one yet. The caller must authorize the creation.
+   *
+   * @param ctx The request context with the acting user and a transaction.
+   * @returns the personal collection of the user.
+   */
+  static async findOrCreatePersonal(ctx: APIContext): Promise<Collection> {
+    const { user } = ctx.state.auth;
+    const { transaction } = ctx.state;
+
+    const existing = await this.findPersonal(user, { transaction });
+    if (existing) {
+      return existing;
+    }
+
+    await LockHelper.acquire(
+      this.sequelize!,
+      `collections:personal:${user.teamId}:${user.id}`,
+      transaction
+    );
+
+    const locked = await this.findPersonal(user, { transaction });
+    if (locked) {
+      return locked;
+    }
+
+    const collection = await this.createWithCtx(ctx, {
+      name: "Personal",
+      teamId: user.teamId,
+      createdById: user.id,
+      ownerId: user.id,
+      permission: null,
+    });
+
+    // The owner membership is created without hooks, so clear the cache here.
+    const invalidate = () =>
+      CacheHelper.clearData(RedisPrefixHelper.getUserCollectionIdsKey(user.id));
+    if (transaction) {
+      transaction.afterCommit(invalidate);
+    } else {
+      await invalidate();
+    }
+
+    return this.findByPk(collection.id, {
+      userId: user.id,
+      transaction,
+      rejectOnEmpty: true,
+    });
+  }
+
+  /**
    * Convenience method to return if a collection is considered private.
    * This means that a membership is required to view it rather than just being
    * a workspace member.
@@ -757,6 +874,16 @@ class Collection extends ParanoidModel<
    */
   get isPrivate() {
     return !this.permission;
+  }
+
+  /**
+   * Whether this collection is the personal collection of a user. A personal
+   * collection is private and only its owner can see or manage it.
+   *
+   * @returns boolean
+   */
+  get isPersonal() {
+    return !!this.ownerId;
   }
 
   /**
@@ -859,36 +986,81 @@ class Collection extends ParanoidModel<
     return this;
   };
 
-  deleteDocument = async function (document: Document, options?: FindOptions) {
-    await this.removeDocumentInStructure(document, options);
+  /**
+   * Updates the reason for archiving the collection.
+   *
+   * @param ctx the API context, including the acting user and transaction.
+   * @param reason the reason to save, or null to clear it.
+   * @returns the updated collection.
+   * @throws ValidationError if the collection is no longer archived.
+   */
+  updateDeprecatedReason = async (ctx: APIContext, reason: string | null) => {
+    const { transaction } = ctx.state;
 
-    // Helper to destroy all child documents for a document
-    const loopChildren = async (
-      documentId: string,
-      opts?: FindOptions<Document>
-    ) => {
-      const childDocuments = await Document.findAll({
-        where: {
-          parentDocumentId: documentId,
-        },
+    if (transaction) {
+      await Collection.unscoped().findOne({
+        attributes: ["id"],
+        where: { id: this.id },
+        transaction,
+        lock: transaction.LOCK.UPDATE,
+        rejectOnEmpty: true,
       });
+    }
 
-      for (const child of childDocuments) {
-        await loopChildren(child.id, opts);
-        await child.destroy(opts);
-      }
-    };
+    await this.reload({ transaction });
+    if (!this.archivedAt || this.deletedAt) {
+      throw ValidationError("The collection must be archived");
+    }
 
-    await loopChildren(document.id, options);
-    await document.destroy(options);
+    this.deprecatedReason = reason?.trim() || null;
+    if (this.changed("deprecatedReason")) {
+      await this.saveWithCtx(ctx, { silent: true });
+    }
+    return this;
   };
 
-  removeDocumentInStructure = async function (
+  /**
+   * Removes a document from this collection's structure and soft deletes it
+   * along with all of its descendants.
+   *
+   * @param ctx the API context, which attributes the deletion to the acting user.
+   * @param document the document to delete.
+   */
+  deleteDocument = async (ctx: APIContext, document: Document) => {
+    const { transaction } = ctx.context;
+
+    await this.removeDocumentInStructure(document, { transaction });
+
+    // IDs come back breadth-first so reversing them destroys the deepest
+    // descendants first.
+    const childDocumentIds = (
+      await document.findAllChildDocumentIds(undefined, { transaction })
+    ).reverse();
+
+    if (childDocumentIds.length) {
+      const childDocuments = await Document.findAll({
+        transaction,
+        where: {
+          id: childDocumentIds,
+        },
+      });
+      const childDocumentsById = keyBy(childDocuments, (child) => child.id);
+
+      // Destroyed one at a time to ensure model hooks run for each document.
+      for (const childDocumentId of childDocumentIds) {
+        await childDocumentsById[childDocumentId]?.destroy(ctx.context);
+      }
+    }
+
+    await document.destroy(ctx.context);
+  };
+
+  removeDocumentInStructure = async (
     document: Document,
     options?: FindOptions & {
       save?: boolean;
     }
-  ) {
+  ) => {
     if (!this.documentStructure) {
       return;
     }
@@ -946,7 +1118,7 @@ class Collection extends ParanoidModel<
     return result;
   };
 
-  getDocumentParents = function (documentId: string): string[] | void {
+  getDocumentParents = (documentId: string): string[] | void => {
     let result!: string[];
 
     const loopChildren = (documents: NavigationNode[], path: string[] = []) => {
@@ -973,33 +1145,27 @@ class Collection extends ParanoidModel<
   /**
    * Update document's title and url in the documentStructure
    */
-  updateDocument = async function (
+  updateDocument = async (
     updatedDocument: Document,
     options?: { transaction?: Transaction | null | undefined }
-  ) {
+  ) => {
     if (!this.documentStructure) {
       return;
     }
 
     const { id } = updatedDocument;
 
-    const updateChildren = (documents: NavigationNode[]) =>
-      Promise.all(
-        documents.map(async (document) => {
-          if (document.id === id) {
-            document = {
-              ...(await updatedDocument.toNavigationNode(options)),
-              children: document.children,
-            };
-          } else {
-            document.children = await updateChildren(document.children);
-          }
+    const updateChildren = (documents: NavigationNode[]): NavigationNode[] =>
+      documents.map((document) => {
+        if (document.id === id) {
+          return updatedDocument.toShallowNavigationNode(document.children);
+        }
 
-          return document;
-        })
-      );
+        document.children = updateChildren(document.children);
+        return document;
+      });
 
-    this.documentStructure = await updateChildren(this.documentStructure);
+    this.documentStructure = updateChildren(this.documentStructure);
     // Sequelize doesn't seem to set the value with splice on JSONB field
     // https://github.com/sequelize/sequelize/blob/e1446837196c07b8ff0c23359b958d68af40fd6d/src/model.js#L3937
     this.changed("documentStructure", true);
@@ -1011,7 +1177,7 @@ class Collection extends ParanoidModel<
     return this;
   };
 
-  addDocumentToStructure = async function (
+  addDocumentToStructure = async (
     document: Document,
     index?: number,
     options: FindOptions & {
@@ -1021,7 +1187,7 @@ class Collection extends ParanoidModel<
       includeArchived?: boolean;
       insertOrder?: "prepend" | "append";
     } = {}
-  ) {
+  ) => {
     if (!this.documentStructure) {
       this.documentStructure = [];
     }
@@ -1031,10 +1197,8 @@ class Collection extends ParanoidModel<
     }
 
     // If moving existing document with children, use existing structure
-    const documentJson = {
-      ...(await document.toNavigationNode(options)),
-      ...options.documentJson,
-    };
+    const documentJson =
+      options.documentJson ?? (await document.toNavigationNode(options));
 
     // Determine the insertion index based on order parameter or explicit index
     let insertionIndex: number;
@@ -1123,6 +1287,7 @@ class Collection extends ParanoidModel<
     id: this.id,
     title: this.name,
     url: this.path,
+    type: NavigationNodeType.Collection,
     icon: isNil(this.icon) ? undefined : this.icon,
     color: isNil(this.color) ? undefined : this.color,
     children: sortNavigationNodes(this.documentStructure ?? [], this.sort),

@@ -5,12 +5,13 @@ import { ShrinkIcon, GrowIcon, CloseIcon } from "outline-icons";
 import styled, { useTheme } from "styled-components";
 import Icon from "@shared/components/Icon";
 import { richExtensions } from "@shared/editor/nodes";
+import { EditorStyleHelper } from "@shared/editor/styles/EditorStyleHelper";
 import { canUseElementFullscreen } from "@shared/utils/browser";
 import { s, depths, hover } from "@shared/styles";
 import { cloneDeep } from "es-toolkit/compat";
 import type { ProsemirrorData } from "@shared/types";
 import { ProsemirrorHelper } from "@shared/utils/ProsemirrorHelper";
-import { colorPalette } from "@shared/utils/collections";
+import { colorPalette } from "@shared/constants";
 import Editor from "~/components/Editor";
 import NudeButton from "~/components/NudeButton";
 import Text from "~/components/Text";
@@ -143,11 +144,9 @@ function PresentationMode({ title, icon, iconColor, data, onClose }: Props) {
   const slides = React.useMemo(() => {
     const result = splitIntoSlides(strippedData, title, icon, iconColor);
     const contentSlides = result.filter((s) => s.type === "content");
-    const hasContent =
-      contentSlides.length > 0 &&
-      contentSlides.some(
-        (s) => s.type === "content" && !isContentEmpty(s.content)
-      );
+    const hasContent = contentSlides.some(
+      (s) => s.type === "content" && !isContentEmpty(s.content)
+    );
 
     if (!hasContent) {
       return [result[0], { type: "instructions" as const }];
@@ -295,7 +294,7 @@ function PresentationMode({ title, icon, iconColor, data, onClose }: Props) {
     <Container ref={containerRef} $background={theme.background} $idle={isIdle}>
       <TopBar $idle={isIdle}>
         <Flex align="center" gap={12}>
-          <Tooltip content={t("Previous slide")} delay={500}>
+          <Tooltip content={t("Previous slide")}>
             <Button onClick={goPrev} disabled={currentSlide === 0}>
               <ArrowLeftIcon />
             </Button>
@@ -303,7 +302,7 @@ function PresentationMode({ title, icon, iconColor, data, onClose }: Props) {
           <SlideCounter>
             {currentSlide + 1} / {totalSlides}
           </SlideCounter>
-          <Tooltip content={t("Next slide")} delay={500}>
+          <Tooltip content={t("Next slide")}>
             <Button
               onClick={goNext}
               disabled={currentSlide === totalSlides - 1}
@@ -314,7 +313,7 @@ function PresentationMode({ title, icon, iconColor, data, onClose }: Props) {
         </Flex>
         <RightButtons>
           {supportsFullscreen && (
-            <Tooltip content={t("Toggle fullscreen")} delay={500}>
+            <Tooltip content={t("Toggle fullscreen")}>
               <Button onClick={toggleFullscreen}>
                 {isFullscreen ? (
                   <ShrinkIcon color="currentColor" />
@@ -324,7 +323,7 @@ function PresentationMode({ title, icon, iconColor, data, onClose }: Props) {
               </Button>
             </Tooltip>
           )}
-          <Tooltip content={t("Close")} delay={500}>
+          <Tooltip content={t("Close")}>
             <Button onClick={onClose}>
               <CloseIcon />
             </Button>
@@ -426,9 +425,9 @@ const SlideContent = styled.div`
     font-size: 1.4em;
   }
 
-  .image-wrapper,
-  .image-wrapper img,
-  .mermaid-diagram-wrapper {
+  .${EditorStyleHelper.imageWrapper},
+  .${EditorStyleHelper.imageWrapper} img,
+  .${EditorStyleHelper.mermaidDiagram} {
     pointer-events: none !important;
   }
 
@@ -480,10 +479,9 @@ const TopBar = styled.div<{ $idle: boolean }>`
   transition: opacity 300ms ease;
 `;
 
-const SlideCounter = styled(Text)`
+const SlideCounter = styled(Text).attrs({ size: "small" })`
   font-variant-numeric: tabular-nums;
   color: ${s("textTertiary")};
-  font-size: 14px;
   min-width: 60px;
   text-align: center;
 `;

@@ -1,0 +1,27 @@
+import { z } from "zod";
+import { BatchMaxRequests } from "@shared/constants";
+import { BaseSchema } from "../schema";
+
+export const BatchSchema = BaseSchema.extend({
+  body: z.object({
+    requests: z
+      .array(
+        z.object({
+          /** The RPC method to invoke, e.g. "documents.update". */
+          method: z.string(),
+          /** The request body passed to the method. */
+          body: z.record(z.string(), z.json()).optional(),
+        })
+      )
+      .min(1)
+      .max(BatchMaxRequests, {
+        message: `A batch may contain at most ${BatchMaxRequests} requests`,
+      }),
+  }),
+});
+
+export type BatchReq = z.infer<typeof BatchSchema>;
+
+export type BatchRequestBody = NonNullable<
+  BatchReq["body"]["requests"][number]["body"]
+>;

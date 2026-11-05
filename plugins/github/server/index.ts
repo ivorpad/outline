@@ -1,6 +1,7 @@
 import { Minute } from "@shared/utils/time";
 import { PluginManager, Hook } from "@server/utils/PluginManager";
 import config from "../plugin.json";
+import { GitHubUtils } from "../shared/GitHubUtils";
 import { GitHubIssueProvider } from "./GitHubIssueProvider";
 import router from "./api/github";
 import env from "./env";
@@ -32,7 +33,12 @@ if (enabled) {
     },
     {
       type: Hook.UnfurlProvider,
+      name: "GitHub",
       value: { unfurl: GitHub.unfurl, cacheExpiry: Minute.seconds },
+    },
+    {
+      type: Hook.MentionProvider,
+      value: (url: URL) => GitHubUtils.mentionType(url),
     },
     {
       type: Hook.Uninstall,

@@ -1,5 +1,5 @@
-import type { Issue, WorkflowState } from "@linear/sdk";
-import { LinearClient } from "@linear/sdk";
+import type { Issue, LinearClient, WorkflowState } from "@linear/sdk";
+import { toError } from "@shared/utils/error";
 import fetch from "@server/utils/fetch";
 import { sortBy } from "es-toolkit/compat";
 import { z } from "zod";
@@ -102,7 +102,7 @@ export class Linear {
   }
 
   static async getInstalledWorkspace(accessToken: string) {
-    const client = new LinearClient({ accessToken });
+    const client = await Linear.createClient(accessToken);
     return client.organization;
   }
 
@@ -144,21 +144,33 @@ export class Linear {
         5 * Minute.ms
       );
 
-      const client = new LinearClient({ accessToken });
+      const client = await Linear.createClient(accessToken);
 
       switch (resource.type) {
         case UnfurlResourceType.Issue:
-          return Linear.unfurlIssue(client, resource.id, actor);
+          return await Linear.unfurlIssue(client, resource.id, actor);
         case UnfurlResourceType.Project:
-          return Linear.unfurlProject(client, resource.id, actor);
+          return await Linear.unfurlProject(client, resource.id, actor);
         default:
           return;
       }
     } catch (err) {
-      Logger.warn("Failed to fetch resource from Linear", err);
-      return { error: err.message || "Unknown error" };
+      const error = toError(err);
+      Logger.warn("Failed to fetch resource from Linear", error);
+      return { error: error.message || "Unknown error" };
     }
   };
+
+  /**
+   * Creates a Linear API client, loading the ESM-only SDK on demand.
+   *
+   * @param accessToken the OAuth access token to authenticate with.
+   * @returns a configured Linear client.
+   */
+  private static async createClient(accessToken: string) {
+    const { LinearClient: Client } = await import("@linear/sdk");
+    return new Client({ accessToken });
+  }
 
   private static async unfurlIssue(
     client: LinearClient,

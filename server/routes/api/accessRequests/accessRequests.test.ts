@@ -1,4 +1,4 @@
-import { DocumentPermission } from "@shared/types";
+import { CollectionPermission, DocumentPermission } from "@shared/types";
 import { AccessRequest, UserMembership } from "@server/models";
 import { AccessRequestStatus } from "@server/models/AccessRequest";
 import {
@@ -313,6 +313,54 @@ describe("#accessRequests.approve", () => {
     expect(membership?.permission).toEqual(DocumentPermission.ReadWrite);
   });
 
+  it("should allow a document manager who is not a workspace admin to approve", async () => {
+    const team = await buildTeam();
+    const requester = await buildUser({ teamId: team.id });
+    const manager = await buildUser({ teamId: team.id });
+    const collection = await buildCollection({
+      teamId: team.id,
+      userId: manager.id,
+      permission: null,
+    });
+    const document = await buildDocument({
+      teamId: team.id,
+      createdById: manager.id,
+      collectionId: collection.id,
+    });
+
+    await UserMembership.create({
+      userId: manager.id,
+      collectionId: collection.id,
+      createdById: manager.id,
+      permission: CollectionPermission.Admin,
+    });
+
+    const accessRequest = await AccessRequest.create({
+      documentId: document.id,
+      userId: requester.id,
+      teamId: team.id,
+      status: AccessRequestStatus.Pending,
+    });
+
+    const res = await server.post("/api/accessRequests.approve", manager, {
+      body: {
+        id: accessRequest.id,
+        permission: DocumentPermission.Read,
+      },
+    });
+
+    expect(res.status).toEqual(200);
+
+    const membership = await UserMembership.findOne({
+      where: {
+        userId: requester.id,
+        documentId: document.id,
+      },
+    });
+    expect(membership).toBeTruthy();
+    expect(membership?.permission).toEqual(DocumentPermission.Read);
+  });
+
   it("should not allow non-managers to approve requests", async () => {
     const team = await buildTeam();
     const requester = await buildUser({ teamId: team.id });
@@ -417,6 +465,35 @@ describe("#accessRequests.approve", () => {
 
     expect(res.status).toEqual(400);
   });
+
+  it("should not reveal status of responded requests to non-managers", async () => {
+    const team = await buildTeam();
+    const requester = await buildUser({ teamId: team.id });
+    const admin = await buildAdmin({ teamId: team.id });
+    const nonManager = await buildUser();
+    const document = await buildDocument({
+      createdById: admin.id,
+      teamId: team.id,
+    });
+
+    const accessRequest = await AccessRequest.create({
+      documentId: document.id,
+      userId: requester.id,
+      teamId: team.id,
+      status: AccessRequestStatus.Approved,
+      responderId: admin.id,
+      respondedAt: new Date(),
+    });
+
+    const res = await server.post("/api/accessRequests.approve", nonManager, {
+      body: {
+        id: accessRequest.id,
+        permission: DocumentPermission.ReadWrite,
+      },
+    });
+
+    expect(res.status).toEqual(403);
+  });
 });
 
 describe("#accessRequests.dismiss", () => {
@@ -459,6 +536,46 @@ describe("#accessRequests.dismiss", () => {
       },
     });
     expect(membership).toBeNull();
+  });
+
+  it("should allow a document manager who is not a workspace admin to dismiss", async () => {
+    const team = await buildTeam();
+    const requester = await buildUser({ teamId: team.id });
+    const manager = await buildUser({ teamId: team.id });
+    const collection = await buildCollection({
+      teamId: team.id,
+      userId: manager.id,
+      permission: null,
+    });
+    const document = await buildDocument({
+      teamId: team.id,
+      createdById: manager.id,
+      collectionId: collection.id,
+    });
+
+    await UserMembership.create({
+      userId: manager.id,
+      collectionId: collection.id,
+      createdById: manager.id,
+      permission: CollectionPermission.Admin,
+    });
+
+    const accessRequest = await AccessRequest.create({
+      documentId: document.id,
+      userId: requester.id,
+      teamId: team.id,
+    });
+
+    const res = await server.post("/api/accessRequests.dismiss", manager, {
+      body: {
+        id: accessRequest.id,
+      },
+    });
+    const body = await res.json();
+
+    expect(res.status).toEqual(200);
+    expect(body.data.status).toEqual(AccessRequestStatus.Dismissed);
+    expect(body.data.responderId).toEqual(manager.id);
   });
 
   it("should not allow non-managers to dismiss requests", async () => {

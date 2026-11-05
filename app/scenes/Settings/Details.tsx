@@ -6,7 +6,8 @@ import { useRef, useState } from "react";
 import * as React from "react";
 import { useTranslation, Trans } from "react-i18next";
 import { toast } from "sonner";
-import { ThemeProvider, useTheme } from "styled-components";
+import { ThemeProvider } from "styled-components";
+import { errToString } from "@shared/utils/error";
 import { buildDarkTheme, buildLightTheme } from "@shared/styles/theme";
 import type { CustomTheme } from "@shared/types";
 import { TOCPosition, TeamPreference } from "@shared/types";
@@ -17,7 +18,6 @@ import ButtonLink from "~/components/ButtonLink";
 import DefaultCollectionInputSelect from "~/components/DefaultCollectionInputSelect";
 import Heading from "~/components/Heading";
 import Input from "~/components/Input";
-import InputColor from "~/components/InputColor";
 import type { Option } from "~/components/InputSelect";
 import { InputSelect } from "~/components/InputSelect";
 import Scene from "~/components/Scene";
@@ -31,12 +31,12 @@ import TeamDelete from "../TeamDelete";
 import { ActionRow } from "./components/ActionRow";
 import ImageInput from "./components/ImageInput";
 import SettingRow from "./components/SettingRow";
+import { ThemeColorInputs } from "./components/ThemeColorInputs";
 
 function Details() {
   const { dialogs, ui } = useStores();
   const { t } = useTranslation();
   const team = useCurrentTeam();
-  const theme = useTheme();
   const can = usePolicy(team);
 
   const form = useRef<HTMLFormElement>(null);
@@ -56,12 +56,16 @@ function Details() {
     team.defaultCollectionId
   );
 
-  const customTheme: Partial<CustomTheme> = pickBy(
-    {
-      accent,
-      accentText,
-    },
-    isHexColor
+  const customTheme: Partial<CustomTheme> = React.useMemo(
+    () =>
+      pickBy(
+        {
+          accent,
+          accentText,
+        },
+        isHexColor
+      ),
+    [accent, accentText]
   );
 
   const [tocPosition, setTocPosition] = useState(
@@ -110,7 +114,7 @@ function Details() {
         });
         toast.success(t("Settings saved"));
       } catch (err) {
-        toast.error(err.message);
+        toast.error(errToString(err));
       }
     },
     [
@@ -173,15 +177,6 @@ function Details() {
     [team, t]
   );
 
-  const handleCommentingChange = React.useCallback(
-    async (checked: boolean) => {
-      team.setPreference(TeamPreference.Commenting, checked);
-      await team.save();
-      toast.success(t("Settings saved"));
-    },
-    [team, t]
-  );
-
   const isValid = form.current?.checkValidity();
 
   const newTheme = React.useMemo(
@@ -194,8 +189,8 @@ function Details() {
 
   return (
     <ThemeProvider theme={newTheme}>
-      <Scene title={t("Details")} icon={<TeamIcon />}>
-        <Heading>{t("Details")}</Heading>
+      <Scene title={t("General")} icon={<TeamIcon />}>
+        <Heading>{t("General")}</Heading>
         <Text as="p" type="secondary">
           <Trans>
             These settings affect the way that your workspace appears to
@@ -204,7 +199,7 @@ function Details() {
         </Text>
 
         <form onSubmit={handleSubmit} ref={form}>
-          <Heading as="h2">{t("Display")}</Heading>
+          <Heading as="h2">{t("Appearance")}</Heading>
           <SettingRow
             label={t("Logo")}
             name="avatarUrl"
@@ -273,19 +268,11 @@ function Details() {
               </>
             }
           >
-            <InputColor
-              id="accent"
-              value={accent ?? theme.accent}
-              label={t("Accent color")}
-              onChange={setAccent}
-              flex
-            />
-            <InputColor
-              id="accentText"
-              value={accentText ?? theme.accentText}
-              label={t("Accent text color")}
-              onChange={setAccentText}
-              flex
+            <ThemeColorInputs
+              accent={accent}
+              accentText={accentText}
+              onAccentChange={setAccent}
+              onAccentTextChange={setAccentText}
             />
           </SettingRow>
           {(team.avatarUrl || team.description) && (
@@ -368,10 +355,11 @@ function Details() {
             />
           </SettingRow>
           <SettingRow
+            border={false}
             name={TeamPreference.SeamlessEdit}
             label={t("Separate editing")}
             description={t(
-              "When enabled documents have a separate editing mode by default instead of being always editable. This setting can be overridden by user preferences."
+              "When enabled, documents have a separate editing mode by default instead of being always editable. This setting can be overridden by user preferences."
             )}
           >
             <Switch
@@ -379,21 +367,6 @@ function Details() {
               name={TeamPreference.SeamlessEdit}
               checked={!team.getPreference(TeamPreference.SeamlessEdit)}
               onChange={handleSeamlessEditChange}
-            />
-          </SettingRow>
-          <SettingRow
-            border={false}
-            name={TeamPreference.Commenting}
-            label={t("Commenting")}
-            description={t(
-              "When enabled team members can add comments to documents."
-            )}
-          >
-            <Switch
-              id={TeamPreference.Commenting}
-              name={TeamPreference.Commenting}
-              checked={team.getPreference(TeamPreference.Commenting)}
-              onChange={handleCommentingChange}
             />
           </SettingRow>
 

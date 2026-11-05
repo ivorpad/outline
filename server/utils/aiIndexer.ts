@@ -244,7 +244,7 @@ export class VectorAIRetriever extends BaseRetriever {
     super();
   }
 
-  protected async _getRelevantDocuments(query: string): Promise<LCDocument[]> {
+  async _getRelevantDocuments(query: string): Promise<LCDocument[]> {
     const hits = await searchChunks(query, this.teamId, this.k);
     return hits.map(
       (h) =>

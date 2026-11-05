@@ -1,9 +1,9 @@
-import Router from "koa-router";
+import Router from "@koa/router";
 import { uniqBy } from "es-toolkit/compat";
 import { Op } from "sequelize";
 import auth from "@server/middlewares/authentication";
 import validate from "@server/middlewares/validate";
-import { Document, GroupMembership } from "@server/models";
+import { Document, GroupMembership, GroupUser } from "@server/models";
 import {
   presentDocuments,
   presentGroup,
@@ -26,10 +26,18 @@ router.post(
     const { user } = ctx.state.auth;
     const userId = user.id;
 
+    // Filtering on the user's groups up front lets the query use the groupId
+    // index rather than scanning every document membership.
+    const groupUsers = await GroupUser.findAll({
+      attributes: ["groupId"],
+      where: groupId ? { userId, groupId } : { userId },
+    });
+
     const { count, rows: memberships } = await GroupMembership.findAndCountAll({
       distinct: true,
       col: "id",
       where: {
+        groupId: groupUsers.map((groupUser) => groupUser.groupId),
         documentId: {
           [Op.ne]: null,
         },
@@ -39,9 +47,19 @@ router.post(
       },
       include: [
         {
+          model: Document.unscoped(),
+          as: "document",
+          required: true,
+          attributes: [],
+          where: {
+            archivedAt: {
+              [Op.eq]: null,
+            },
+          },
+        },
+        {
           association: "group",
           required: true,
-          where: groupId ? { id: groupId } : undefined,
           include: [
             {
               association: "groupUsers",
@@ -52,6 +70,10 @@ router.post(
             },
           ],
         },
+      ],
+      order: [
+        ["createdAt", "DESC"],
+        ["id", "ASC"],
       ],
       offset: ctx.state.pagination.offset,
       limit: ctx.state.pagination.limit,

@@ -1,7 +1,8 @@
-import Router from "koa-router";
+import Router from "@koa/router";
 import { Op } from "sequelize";
+import AuthenticationHelper from "@shared/helpers/AuthenticationHelper";
 import { UserRole } from "@shared/types";
-import { ValidationError } from "@server/errors";
+import { NotFoundError, ValidationError } from "@server/errors";
 import auth from "@server/middlewares/authentication";
 import { rateLimiter } from "@server/middlewares/rateLimiter";
 import { transaction } from "@server/middlewares/transaction";
@@ -15,10 +16,27 @@ import {
 } from "@server/presenters";
 import type { APIContext } from "@server/types";
 import { RateLimiterStrategy } from "@server/utils/RateLimiter";
+import { ClientMetadataHelper } from "@server/utils/oauth/ClientMetadataHelper";
+import { OAuthHelper } from "@server/utils/oauth/OAuthHelper";
 import pagination from "../middlewares/pagination";
 import * as T from "./schema";
 
 const router = new Router();
+
+/**
+ * Whether the presented credential is scoped to manage OAuth clients. The
+ * user's ability is not sufficient on its own to receive a client secret, as a
+ * restricted credential must not be able to trade itself for a durable one.
+ *
+ * @param ctx The request context.
+ * @returns true if the credential's scope covers managing clients.
+ */
+function hasManageScope(ctx: APIContext) {
+  return AuthenticationHelper.canAccess(
+    "/api/oauthClients.update",
+    ctx.state.auth.scope ?? ["*"]
+  );
+}
 
 router.post(
   "oauthClients.list",
@@ -49,7 +67,9 @@ router.post(
       pagination: { ...ctx.state.pagination, total },
       data: oauthClients.map((oauthClient) =>
         can(user, "update", oauthClient)
-          ? presentOAuthClient(oauthClient)
+          ? presentOAuthClient(oauthClient, {
+              includeSecret: hasManageScope(ctx),
+            })
           : presentPublishedOAuthClient(oauthClient)
       ),
       policies: presentPolicies(user, oauthClients),
@@ -58,19 +78,28 @@ router.post(
 );
 router.post(
   "oauthClients.info",
+  rateLimiter(RateLimiterStrategy.OneHundredPerHour),
   auth(),
   validate(T.OAuthClientsInfoSchema),
   async (ctx: APIContext<T.OAuthClientsInfoReq>) => {
     const { id, clientId, redirectUri } = ctx.input.body;
     const { user } = ctx.state.auth;
 
-    const oauthClient = await OAuthClient.findOne({
-      where: clientId ? { clientId } : { id },
-      rejectOnEmpty: true,
-    });
+    const oauthClient = clientId
+      ? await ClientMetadataHelper.findOrFetchByClientId(clientId, user.team)
+      : await OAuthClient.findByPk(id);
+    if (!oauthClient) {
+      throw NotFoundError();
+    }
     authorize(user, "read", oauthClient);
 
-    if (redirectUri && !oauthClient.redirectUris.includes(redirectUri)) {
+    if (
+      redirectUri &&
+      !OAuthHelper.isRegisteredRedirectUri(
+        oauthClient.redirectUris,
+        redirectUri
+      )
+    ) {
       throw ValidationError("redirect_uri is invalid");
     }
 
@@ -79,7 +108,9 @@ router.post(
 
     ctx.body = {
       data: canUpdate
-        ? presentOAuthClient(oauthClient)
+        ? presentOAuthClient(oauthClient, {
+            includeSecret: hasManageScope(ctx),
+          })
         : presentPublishedOAuthClient(oauthClient),
       policies: isInternalApp ? presentPolicies(user, [oauthClient]) : [],
     };
@@ -105,7 +136,7 @@ router.post(
     });
 
     ctx.body = {
-      data: presentOAuthClient(oauthClient),
+      data: presentOAuthClient(oauthClient, { includeSecret: true }),
       policies: presentPolicies(user, [oauthClient]),
     };
   }
@@ -131,7 +162,7 @@ router.post(
     await oauthClient.updateWithCtx(ctx, input);
 
     ctx.body = {
-      data: presentOAuthClient(oauthClient),
+      data: presentOAuthClient(oauthClient, { includeSecret: true }),
       policies: presentPolicies(user, [oauthClient]),
     };
   }
@@ -159,7 +190,7 @@ router.post(
     await oauthClient.saveWithCtx(ctx);
 
     ctx.body = {
-      data: presentOAuthClient(oauthClient),
+      data: presentOAuthClient(oauthClient, { includeSecret: true }),
       policies: presentPolicies(user, [oauthClient]),
     };
   }

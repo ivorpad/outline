@@ -1,4 +1,4 @@
-import { Switch } from "react-router-dom";
+import { Redirect, Switch } from "react-router-dom";
 import Error404 from "~/scenes/Errors/Error404";
 import { createLazyComponent as lazy } from "~/components/LazyLoad";
 import Route from "~/components/ProfiledRoute";
@@ -26,7 +26,14 @@ function SettingsRoutes() {
           component={config.component}
         />
       ))}
-      {/* TODO: Refactor these exceptions into config? */}
+      {/* Members was renamed to Users, redirect for backwards compatibility */}
+      <Redirect
+        exact
+        from={settingsPath("members")}
+        to={settingsPath("users")}
+      />
+      {/* Features was renamed to AI, redirect for backwards compatibility */}
+      <Redirect exact from={settingsPath("features")} to={settingsPath("ai")} />
       <Route
         exact
         path={settingsPath("groups", ":id", "members")}

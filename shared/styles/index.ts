@@ -3,7 +3,7 @@ import { isTouchDevice } from "../utils/browser";
 
 export { default as depths } from "./depths";
 
-export { default as breakpoints } from "./breakpoints";
+export { breakpoints } from "./breakpoint";
 
 /**
  * Returns "hover" on a non-touch device and "active" on a touch device. To
@@ -43,6 +43,39 @@ export const hideScrollbars = () => `
   scrollbar-width: none;
   &::-webkit-scrollbar {
     display: none;
+  }
+`;
+
+/**
+ * Mixin to give an element superellipse ("squircle") corners in browsers that
+ * support `corner-shape`, with a standard border radius elsewhere.
+ *
+ * @param radius the border radius in pixels.
+ * @param exponent the superellipse exponent, where 2 is a squircle.
+ * @returns string of CSS
+ */
+export const borderRadius = (radius: number, exponent = 2) => `
+  border-radius: ${radius}px;
+
+  @supports (corner-shape: superellipse(2)) {
+    /* A superellipse is tighter than a circular arc, so increase the radius to compensate. */
+    border-radius: ${Math.round(radius * 1.8)}px;
+    corner-shape: superellipse(${exponent});
+  }
+`;
+
+/**
+ * Mixin for a hairline border, drawn at half a pixel on displays with the
+ * resolution to render one, and a whole pixel elsewhere.
+ *
+ * @param color the color of the border.
+ * @returns string of CSS
+ */
+export const hairline = (color: string) => `
+  border: 1px solid ${color};
+
+  @media (-webkit-min-device-pixel-ratio: 2), (min-resolution: 2dppx) {
+    border-width: 0.5px;
   }
 `;
 

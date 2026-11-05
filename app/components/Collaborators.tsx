@@ -1,8 +1,12 @@
 import { filter, isEqual, orderBy, uniq } from "es-toolkit/compat";
 import { observer } from "mobx-react";
+import styled from "styled-components";
 import { useState, useMemo, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
+import { MOBILE_TOUCH_TARGET } from "@shared/constants";
 import type Document from "~/models/Document";
+import type User from "~/models/User";
+import type { AvatarProps } from "~/components/Avatar";
 import { AvatarSize, AvatarWithPresence } from "~/components/Avatar";
 import DocumentViews from "~/components/DocumentViews";
 import Facepile from "~/components/Facepile";
@@ -13,7 +17,11 @@ import {
   PopoverContent,
 } from "~/components/primitives/Popover";
 import useCurrentUser from "~/hooks/useCurrentUser";
+import useMobile from "~/hooks/useMobile";
 import useStores from "~/hooks/useStores";
+
+/** Space after the avatars on mobile, matching the inset of a 24px icon in a touch target. */
+const MobileIconInset = (MOBILE_TOUCH_TARGET - 24) / 2;
 
 type Props = {
   /** The document to display live collaborators for */
@@ -29,6 +37,8 @@ type Props = {
 function Collaborators(props: Props) {
   const { limit = 6 } = props;
   const { t } = useTranslation();
+  const isMobile = useMobile();
+  const size = isMobile ? AvatarSize.XLarge : AvatarSize.Large;
   const user = useCurrentUser();
   const currentUserId = user?.id;
   const [requestedUserIds, setRequestedUserIds] = useState<string[]>([]);
@@ -41,11 +51,15 @@ function Collaborators(props: Props) {
     [documentPresence]
   );
 
-  // Use Set for O(1) lookups and stable references
-  const presentIds = useMemo(
-    () => new Set(documentPresenceArray.map((p) => p.userId)),
-    [documentPresenceArray]
-  );
+  // Use Set for O(1) lookups and stable references. The current user is
+  // always included to avoid a flash while the multiplayer connection forms.
+  const presentIds = useMemo(() => {
+    const ids = new Set(documentPresenceArray.map((p) => p.userId));
+    if (currentUserId) {
+      ids.add(currentUserId);
+    }
+    return ids;
+  }, [documentPresenceArray, currentUserId]);
   const editingIds = useMemo(
     () =>
       new Set(
@@ -57,7 +71,7 @@ function Collaborators(props: Props) {
   // ensure currently present via websocket are always ordered first
   // Memoize collaboratorIds as a Set for efficient lookup
   const collaboratorIdsSet = useMemo(
-    () => new Set(document.collaboratorIds),
+    () => new Set(document.collaboratorIds ?? []),
     [document.collaboratorIds]
   );
   const collaborators = useMemo(
@@ -79,10 +93,10 @@ function Collaborators(props: Props) {
   // Memoize ids to avoid unnecessary effect executions
   const missingUserIds = useMemo(
     () =>
-      uniq([...document.collaboratorIds, ...Array.from(presentIds)])
+      uniq([...collaboratorIdsSet, ...presentIds])
         .filter((userId) => !users.get(userId))
         .sort(),
-    [document.collaboratorIds, presentIds, users]
+    [collaboratorIdsSet, presentIds, users]
   );
 
   useEffect(() => {
@@ -114,7 +128,7 @@ function Collaborators(props: Props) {
   );
 
   const renderAvatar = useCallback(
-    ({ model: collaborator, ...rest }) => {
+    ({ model: collaborator, ...rest }: AvatarProps & { model: User }) => {
       const isPresent = presentIds.has(collaborator.id);
       const isEditing = editingIds.has(collaborator.id);
       const isObserving = observingUserId === collaborator.id;
@@ -157,21 +171,23 @@ function Collaborators(props: Props) {
     return null;
   }
 
+  const facepileWidth = Math.min(collaborators.length, limit) * size;
+
   return (
     <Popover>
       <PopoverTrigger>
-        <NudeButton
-          width={Math.min(collaborators.length, limit) * AvatarSize.Large}
-          height={AvatarSize.Large}
+        <FacepileButton
+          width={isMobile ? facepileWidth + MobileIconInset : facepileWidth}
+          height={isMobile ? MOBILE_TOUCH_TARGET : size}
         >
           <Facepile
-            size={AvatarSize.Large}
+            size={size}
             limit={limit}
             overflow={Math.max(0, collaborators.length - limit)}
             users={collaborators}
             renderAvatar={renderAvatar}
           />
-        </NudeButton>
+        </FacepileButton>
       </PopoverTrigger>
       <PopoverContent aria-label={t("Viewers")} side="bottom" align="end">
         <DocumentViews document={document} />
@@ -179,5 +195,10 @@ function Collaborators(props: Props) {
     </Popover>
   );
 }
+
+const FacepileButton = styled(NudeButton)`
+  display: inline-flex;
+  align-items: center;
+`;
 
 export default observer(Collaborators);

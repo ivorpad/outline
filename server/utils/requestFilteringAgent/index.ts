@@ -1,4 +1,3 @@
-/* oxlint-disable no-restricted-imports */
 // Vendored from request-filtering-agent v3.2.0 (MIT, by azu).
 // Source: https://github.com/azu/request-filtering-agent/blob/cc0f9fcb9e700cd4246db2ea36245439eede4096/src/request-filtering-agent.ts
 // License: see ./LICENSE.md
@@ -42,6 +41,7 @@ export interface RequestFilteringAgentOptions {
   denyIPAddressList?: string[];
 }
 
+/** Default options applied when constructing request filtering agents. */
 export const DefaultRequestFilteringAgentOptions: Required<RequestFilteringAgentOptions> =
   {
     allowPrivateIPAddress: false,
@@ -281,7 +281,10 @@ export class RequestFilteringHttpsAgent extends https.Agent {
   }
 }
 
+/** Process-global HTTP agent with default request filtering options. */
 export const globalHttpAgent = new RequestFilteringHttpAgent();
+
+/** Process-global HTTPS agent with default request filtering options. */
 export const globalHttpsAgent = new RequestFilteringHttpsAgent();
 
 /**

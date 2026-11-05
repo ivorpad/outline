@@ -1,6 +1,7 @@
 import { FetchError } from "node-fetch";
-import { Op } from "sequelize";
-import { colorPalette } from "@shared/utils/collections";
+import { Op, QueryTypes } from "sequelize";
+import { toError } from "@shared/utils/error";
+import { colorPalette } from "@shared/constants";
 import WebhookDisabledEmail from "@server/emails/templates/WebhookDisabledEmail";
 import env from "@server/env";
 import Logger from "@server/logging/Logger";
@@ -70,12 +71,63 @@ import type {
   WebhookSubscriptionEvent,
 } from "@server/types";
 import fetch from "@server/utils/fetch";
+import { WebhookEventHelper } from "../helpers/WebhookEventHelper";
 import type { WebhookPayload } from "../presenters/webhook";
 import presentWebhook from "../presenters/webhook";
 import presentWebhookSubscription from "../presenters/webhookSubscription";
 
 function assertUnreachable(event: never) {
   Logger.warn(`DeliverWebhookTask did not handle ${(event as Event).name}`);
+}
+
+/**
+ * Node connection-level error codes that are expected when delivering to
+ * arbitrary, user-supplied webhook URLs. These indicate a misconfigured or
+ * unreachable destination rather than a bug in Outline.
+ */
+const expectedNetworkErrorCodes = new Set([
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ECONNABORTED",
+  "ETIMEDOUT",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "EPIPE",
+  "EPROTO",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "CERT_HAS_EXPIRED",
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+]);
+
+/**
+ * Determine whether an error thrown while delivering a webhook is an expected
+ * network failure caused by the user-supplied destination URL (connection
+ * reset, timeout, unreachable host, invalid certificate, etc) rather than an
+ * unexpected bug. Such failures are noisy and do not need error tracking.
+ *
+ * @param err The error that occurred during delivery.
+ * @returns true if the error is an expected network failure.
+ */
+export function isExpectedNetworkError(err: unknown): boolean {
+  if (err instanceof FetchError) {
+    return true;
+  }
+  if (err instanceof Error) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code && expectedNetworkErrorCodes.has(code)) {
+      return true;
+    }
+    // node-fetch surfaces some low-level socket failures (and our fetch wrapper
+    // converts aborted requests into timeouts) without a structured code.
+    return /socket hang up|request timeout|network|ECONNRESET/i.test(
+      err.message
+    );
+  }
+  return false;
 }
 
 type Props = {
@@ -100,6 +152,16 @@ export default class DeliverWebhookTask extends BaseTask<Props> {
       return;
     }
 
+    // Checked again, as a document can move into a personal collection after
+    // the delivery was queued.
+    if (await WebhookEventHelper.isInPersonalCollection(event)) {
+      Logger.info("task", `Skipped webhook for personal collection event`, {
+        event: event.name,
+        subscriptionId: subscription.id,
+      });
+      return;
+    }
+
     Logger.info("task", `DeliverWebhookTask: ${event.name}`, {
       event: event.name,
       subscriptionId: subscription.id,
@@ -118,6 +180,7 @@ export default class DeliverWebhookTask extends BaseTask<Props> {
       case "authenticationProviders.update":
       case "notifications.create":
       case "notifications.update":
+      case "notifications.delete":
       case "access_requests.create":
         // Ignored
         return;
@@ -369,15 +432,26 @@ export default class DeliverWebhookTask extends BaseTask<Props> {
     subscription: WebhookSubscription,
     event: CommentEvent
   ): Promise<void> {
-    const model = await Comment.findByPk(event.modelId, {
-      paranoid: false,
-    });
+    const [model, document] = await Promise.all([
+      Comment.findByPk(event.modelId, {
+        paranoid: false,
+      }),
+      Document.unscoped().findOne({
+        attributes: ["collectionId"],
+        where: { id: event.documentId },
+        paranoid: false,
+      }),
+    ]);
+
     await this.sendWebhook({
       event,
       subscription,
       payload: {
         id: event.modelId,
-        model: model && presentComment(model),
+        model: model && {
+          ...presentComment(model),
+          collectionId: document?.collectionId ?? null,
+        },
       },
     });
   }
@@ -431,7 +505,7 @@ export default class DeliverWebhookTask extends BaseTask<Props> {
       subscription,
       payload: {
         id: event.modelId,
-        model: model && presentIntegration(model),
+        model: model && presentIntegration(undefined, model),
       },
     });
   }
@@ -681,7 +755,9 @@ export default class DeliverWebhookTask extends BaseTask<Props> {
       Revision.findByPk(event.modelId, {
         paranoid: false,
       }),
-      Document.findByPk(event.documentId, {
+      Document.unscoped().findOne({
+        attributes: ["collectionId"],
+        where: { id: event.documentId },
         paranoid: false,
       }),
     ]);
@@ -765,13 +841,14 @@ export default class DeliverWebhookTask extends BaseTask<Props> {
       });
       status = response.ok ? "success" : "failed";
     } catch (err) {
-      if (err instanceof FetchError && env.isCloudHosted) {
-        Logger.warn(`Failed to send webhook: ${err.message}`, {
+      const error = toError(err);
+      if (isExpectedNetworkError(err) && env.isCloudHosted) {
+        Logger.warn(`Failed to send webhook: ${error.message}`, {
           event,
           deliveryId: delivery.id,
         });
       } else {
-        Logger.error("Failed to send webhook", err, {
+        Logger.error("Failed to send webhook", error, {
           event,
           deliveryId: delivery.id,
         });
@@ -807,10 +884,14 @@ export default class DeliverWebhookTask extends BaseTask<Props> {
       try {
         await this.checkAndDisableSubscription(subscription);
       } catch (err) {
-        Logger.error("Failed to check and disable recent deliveries", err, {
-          event,
-          deliveryId: delivery.id,
-        });
+        Logger.error(
+          "Failed to check and disable recent deliveries",
+          toError(err),
+          {
+            event,
+            deliveryId: delivery.id,
+          }
+        );
       }
     }
   }
@@ -821,36 +902,47 @@ export default class DeliverWebhookTask extends BaseTask<Props> {
     const failureRateThreshold = env.WEBHOOK_FAILURE_RATE_THRESHOLD;
     const timeWindowStart = new Date(Date.now() - timeWindowSeconds * 1000);
 
-    // Get all deliveries within the time window
-    const deliveriesInWindow = await WebhookDelivery.findAll({
-      where: {
-        webhookSubscriptionId: subscription.id,
-        createdAt: {
-          [Op.gte]: timeWindowStart,
+    // Count deliveries within the time window without loading the rows.
+    const [counts] = await WebhookDelivery.sequelize!.query<{
+      total: string;
+      failed: string;
+    }>(
+      `
+        SELECT
+          COUNT(*) as total,
+          COUNT(CASE WHEN status = :statusFailed THEN 1 END) as failed
+        FROM webhook_deliveries
+        WHERE "webhookSubscriptionId" = :subscriptionId
+        AND "createdAt" >= :timeWindowStart
+      `,
+      {
+        type: QueryTypes.SELECT,
+        replacements: {
+          subscriptionId: subscription.id,
+          timeWindowStart,
+          statusFailed: "failed",
         },
-      },
-      order: [["createdAt", "DESC"]],
-    });
+      }
+    );
+
+    const totalDeliveries = parseInt(counts.total, 10);
+    const failedDeliveries = parseInt(counts.failed, 10);
 
     // If there are no deliveries in the time window, don't disable
-    if (deliveriesInWindow.length === 0) {
+    if (totalDeliveries === 0) {
       return;
     }
 
     // Calculate failure rate
-    const failedDeliveries = deliveriesInWindow.filter(
-      (delivery) => delivery.status === "failed"
-    );
-    const failureRate =
-      (failedDeliveries.length / deliveriesInWindow.length) * 100;
+    const failureRate = (failedDeliveries / totalDeliveries) * 100;
 
     // Only log analysis if there are failures to report
-    if (failedDeliveries.length > 0) {
+    if (failedDeliveries > 0) {
       Logger.info("task", "Webhook failure analysis", {
         subscriptionId: subscription.id,
         timeWindowSeconds,
-        totalDeliveries: deliveriesInWindow.length,
-        failedDeliveries: failedDeliveries.length,
+        totalDeliveries,
+        failedDeliveries,
         failureRate: Math.round(failureRate * 100) / 100,
         threshold: failureRateThreshold,
       });
@@ -859,16 +951,15 @@ export default class DeliverWebhookTask extends BaseTask<Props> {
     // Check if failure rate exceeds threshold and we have enough data points
     if (
       failureRate >= failureRateThreshold &&
-      deliveriesInWindow.length >=
-        DeliverWebhookTask.MIN_DELIVERIES_FOR_ANALYSIS
+      totalDeliveries >= DeliverWebhookTask.MIN_DELIVERIES_FOR_ANALYSIS
     ) {
       Logger.warn("Disabling webhook due to high failure rate", {
         subscriptionId: subscription.id,
         failureRate: Math.round(failureRate * 100) / 100,
         threshold: failureRateThreshold,
         timeWindowSeconds,
-        totalDeliveries: deliveriesInWindow.length,
-        failedDeliveries: failedDeliveries.length,
+        totalDeliveries,
+        failedDeliveries,
       });
 
       // Disable the subscription

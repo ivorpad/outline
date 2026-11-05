@@ -1,4 +1,4 @@
-import Router from "koa-router";
+import Router from "@koa/router";
 import type { WhereOptions } from "sequelize";
 import { Op } from "sequelize";
 import auth from "@server/middlewares/authentication";
@@ -14,6 +14,7 @@ import { RateLimiterStrategy } from "@server/utils/RateLimiter";
 import pagination from "../middlewares/pagination";
 import * as T from "./schema";
 import { getTeamFromContext } from "@server/utils/passport";
+import { QueryHelper } from "@server/storage/QueryHelper";
 import { loadPublicShare } from "@server/commands/shareLoader";
 import { AuthorizationError } from "@server/errors";
 
@@ -104,7 +105,7 @@ router.get(
 
     ctx.set(
       "Cache-Control",
-      `max-age=${BaseStorage.defaultSignedUrlExpires}, immutable`
+      `max-age=${BaseStorage.getSignedUrlMinimumLifetime()}, immutable`
     );
     ctx.redirect(await emoji.attachment.signedUrl);
   }
@@ -126,9 +127,7 @@ router.post(
     if (query) {
       where = {
         ...where,
-        name: {
-          [Op.iLike]: `%${query}%`,
-        },
+        name: { [Op.iLike]: QueryHelper.likeContains(query) },
       };
     }
 
