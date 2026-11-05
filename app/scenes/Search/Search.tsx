@@ -199,10 +199,16 @@ function Search() {
           });
         }
         if (env.AI_ANSWERS_ENABLED && query) {
-          return await documents.searchSemantic({
-            query,
-            limit: paginationParams.limit ?? Pagination.defaultLimit,
-          });
+          try {
+            return await documents.searchSemantic({
+              query,
+              limit: paginationParams.limit ?? Pagination.defaultLimit,
+            });
+          } catch {
+            // Semantic search needs the embedding provider and VectorAI. When
+            // either is unavailable, fall back to full-text search below so
+            // searching keeps working.
+          }
         }
         return await documents.search({
           ...requestParams,
