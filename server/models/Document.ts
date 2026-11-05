@@ -461,7 +461,7 @@ class Document extends ArchivableModel<
 
   /** Last time chunks for this document were upserted to the AI vector store. */
   @IsDate
-  @Column
+  @Column(DataType.DATE)
   aiIndexedAt: Date | null;
 
   /** An array of user IDs that have edited this document. */

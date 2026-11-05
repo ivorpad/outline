@@ -279,7 +279,7 @@ class Collection extends ParanoidModel<
   sharing: boolean;
 
   @Default(false)
-  @Column
+  @Column(DataType.BOOLEAN)
   hidden: boolean;
 
   @Default({ field: "title", direction: "asc" })
