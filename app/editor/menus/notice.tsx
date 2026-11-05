@@ -1,22 +1,22 @@
-import type { TFunction } from "i18next";
-import {
-  DoneIcon,
-  ExpandedIcon,
-  InfoIcon,
-  StarredIcon,
-  WarningIcon,
-} from "outline-icons";
-import type { EditorState } from "prosemirror-state";
+import { t } from "i18next";
+import { ExpandedIcon } from "outline-icons";
 import { NoticeTypes } from "@shared/editor/nodes/Notice";
-import type { MenuItem } from "@shared/editor/types";
+import { findParentNode } from "@shared/editor/queries/findParentNode";
+import type { MenuItem, SelectionContext } from "@shared/editor/types";
+import { NoticeIcon } from "~/editor/components/NoticeIcon";
 
-export default function noticeMenuItems(
-  state: EditorState,
-  readOnly: boolean | undefined,
-  t: TFunction
-): MenuItem[] {
-  const node = state.selection.$from.node(-1);
-  const currentStyle = node?.attrs.style as NoticeTypes;
+/**
+ * Returns menu items for the notice/callout selection toolbar.
+ *
+ * @param ctx - the current selection context.
+ * @returns an array of menu items.
+ */
+export default function noticeMenuItems(ctx: SelectionContext): MenuItem[] {
+  const notice = findParentNode(
+    (node) => node.type === ctx.schema.nodes.container_notice
+  )(ctx.selection);
+  const currentStyle: NoticeTypes =
+    notice?.node.attrs.style ?? NoticeTypes.Info;
 
   const mapping = {
     [NoticeTypes.Info]: t("Info notice"),
@@ -28,31 +28,31 @@ export default function noticeMenuItems(
   return [
     {
       name: "container_notice",
-      visible: !readOnly,
+      visible: !ctx.readOnly,
       label: mapping[currentStyle],
       icon: <ExpandedIcon />,
       children: [
         {
           name: NoticeTypes.Info,
-          icon: <InfoIcon />,
+          icon: <NoticeIcon type={NoticeTypes.Info} />,
           label: t("Info notice"),
           active: () => currentStyle === NoticeTypes.Info,
         },
         {
           name: NoticeTypes.Success,
-          icon: <DoneIcon />,
+          icon: <NoticeIcon type={NoticeTypes.Success} />,
           label: t("Success notice"),
           active: () => currentStyle === NoticeTypes.Success,
         },
         {
           name: NoticeTypes.Warning,
-          icon: <WarningIcon />,
+          icon: <NoticeIcon type={NoticeTypes.Warning} />,
           label: t("Warning notice"),
           active: () => currentStyle === NoticeTypes.Warning,
         },
         {
           name: NoticeTypes.Tip,
-          icon: <StarredIcon />,
+          icon: <NoticeIcon type={NoticeTypes.Tip} />,
           label: t("Tip notice"),
           active: () => currentStyle === NoticeTypes.Tip,
         },

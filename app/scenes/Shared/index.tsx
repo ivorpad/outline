@@ -1,6 +1,5 @@
 import { observer } from "mobx-react";
 import { Suspense, useCallback, useEffect } from "react";
-import { Helmet } from "react-helmet-async";
 import { useTranslation } from "react-i18next";
 import { useLocation, useParams } from "react-router-dom";
 import styled, { ThemeProvider } from "styled-components";
@@ -34,7 +33,7 @@ import ErrorOffline from "../Errors/ErrorOffline";
 import { Collection as CollectionScene } from "./Collection";
 import { Document as DocumentScene } from "./Document";
 import DelayedMount from "~/components/DelayedMount";
-import lazyWithRetry from "~/utils/lazyWithRetry";
+import lazyWithRetry from "@shared/utils/lazyWithRetry";
 import { ShareContext } from "@shared/hooks/useShare";
 import ClickablePadding from "~/components/ClickablePadding";
 
@@ -49,7 +48,7 @@ const canonicalOrigin = canonicalUrl
   : window.location.origin;
 
 type PathParams = {
-  shareId: string;
+  shareId?: string;
   collectionSlug?: string;
   documentSlug?: string;
 };
@@ -139,7 +138,7 @@ function SharedScene() {
 
   const pageTitle =
     model instanceof Collection
-      ? model.name
+      ? model.displayName
       : model instanceof Document
         ? model.title
         : undefined;
@@ -219,7 +218,7 @@ function SharedScene() {
               config?.name && isCloudHosted ? (
                 <Content>
                   {t(
-                    "{{ teamName }} is using {{ appName }} to share documents, please login to continue.",
+                    "{{ teamName }} is using {{ appName }} to share documents, please log in to continue.",
                     {
                       teamName: config.name,
                       appName: env.APP_NAME,
@@ -254,18 +253,17 @@ function SharedScene() {
         showLastUpdated: share.showLastUpdated,
       }}
     >
-      <Helmet>
-        <link
-          rel="canonical"
-          href={canonicalOrigin + location.pathname.replace(/\/$/, "")}
-        />
-      </Helmet>
+      <link
+        rel="canonical"
+        href={canonicalOrigin + location.pathname.replace(/\/$/, "")}
+      />
       <TeamContext.Provider value={team}>
         <ThemeProvider theme={theme}>
           <DocumentContextProvider>
             <Layout
               title={pageTitle}
               sidebar={hasSidebar ? <Sidebar share={share} /> : null}
+              sidebarCanCollapse={false}
             >
               {model instanceof Document ? (
                 <DocumentScene document={model} />

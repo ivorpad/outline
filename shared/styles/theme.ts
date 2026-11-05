@@ -1,6 +1,6 @@
-import { darken, lighten, transparentize } from "polished";
+import { darken, lighten, mix, saturate, transparentize } from "polished";
 import type { DefaultTheme, Colors } from "styled-components";
-import breakpoints from "./breakpoints";
+import { breakpoints } from "./breakpoint";
 
 const defaultColors: Colors = {
   transparent: "transparent",
@@ -26,7 +26,7 @@ const defaultColors: Colors = {
   black75: "rgba(0, 0, 0, 0.75)",
   accent: "#0366d6",
   yellow: "#EDBA07",
-  warmGrey: "#EDF2F7",
+  warmGrey: "hsl(212 31% 95% / 1)",
   danger: "#ed2651",
   warning: "#f08a24",
   success: "#3ad984",
@@ -43,12 +43,19 @@ const defaultColors: Colors = {
   },
 };
 
+/** The narrowest the content of a sidebar can be, excluding its padding. */
+const sidebarMinWidth = 240;
+
+const sidebarPadding = 16;
+
 const spacing = {
   sidebarWidth: 260,
   sidebarRightWidth: 300,
   sidebarCollapsedWidth: 16,
-  sidebarMinWidth: 200,
-  sidebarMaxWidth: 600,
+  sidebarMinWidth,
+  sidebarMaxWidth: 500,
+  /** The narrowest a sidebar can be resized to, including its padding. */
+  sidebarResizeMinWidth: sidebarMinWidth + sidebarPadding,
 };
 
 const buildBaseTheme = (input: Partial<Colors>) => {
@@ -95,14 +102,23 @@ const buildBaseTheme = (input: Partial<Colors>) => {
     codeConstant: "#0550ae",
     codeParameter: colors.lightBlack,
     codeOperator: "#393a34",
-    noticeInfoBackground: colors.brand.blue,
-    noticeInfoText: colors.almostBlack,
-    noticeTipBackground: "#f5be31",
-    noticeTipText: colors.almostBlack,
-    noticeWarningBackground: "#d73a49",
-    noticeWarningText: colors.almostBlack,
+    noticeInfoBackground: colors.slate,
+    noticeInfoText: saturate(0.1, mix(0.5, colors.slate, colors.almostBlack)),
+    noticeTipBackground: colors.brand.blue,
+    noticeTipText: saturate(
+      0.1,
+      mix(0.5, colors.brand.blue, colors.almostBlack)
+    ),
+    noticeWarningBackground: colors.brand.yellow,
+    noticeWarningText: saturate(
+      0.1,
+      mix(0.5, colors.brand.yellow, colors.almostBlack)
+    ),
     noticeSuccessBackground: colors.brand.green,
-    noticeSuccessText: colors.almostBlack,
+    noticeSuccessText: saturate(
+      0.1,
+      mix(0.5, colors.brand.green, colors.almostBlack)
+    ),
     tableSelectedBackground: transparentize(0.9, colors.accent),
     breakpoints,
     ...colors,
@@ -130,7 +146,7 @@ export const buildLightTheme = (input: Partial<Colors>): DefaultTheme => {
     textDiffDeleted: colors.slateDark,
     textDiffDeletedBackground: "rgba(255, 180, 173, 0.25)",
     placeholder: "#a2b2c3",
-    sidebarBackground: colors.warmGrey,
+    sidebarBackground: "hsl(212 31% 95% / 1)",
     sidebarHoverBackground: "hsl(212 31% 90% / 1)",
     sidebarActiveBackground: "hsl(212 31% 85% / 1)",
     sidebarControlHoverBackground: "rgb(138 164 193 / 20%)",
@@ -158,8 +174,9 @@ export const buildLightTheme = (input: Partial<Colors>): DefaultTheme => {
     mentionHoverBackground: "#d7e0ea",
     tableSelected: colors.accent,
     buttonNeutralBackground: colors.white,
+    buttonNeutralHoverBackground: colors.warmGrey,
     buttonNeutralText: colors.almostBlack,
-    buttonNeutralBorder: darken(0.15, colors.white),
+    buttonNeutralBorder: "hsl(212 31% 88% / 1)",
     tooltipBackground: colors.almostBlack,
     tooltipText: colors.white,
     toastBackground: colors.white,
@@ -194,7 +211,7 @@ export const buildDarkTheme = (input: Partial<Colors>): DefaultTheme => {
     textDiffInsertedBackground: "rgba(63,185,80,0.25)",
     textDiffDeleted: darken(0.1, colors.almostWhite),
     textDiffDeletedBackground: "rgba(248,81,73,0.15)",
-    placeholder: "#596673",
+    placeholder: "hsl(215 17% 30% / 1)",
     sidebarBackground: colors.veryDarkBlue,
     sidebarHoverBackground: lighten(0.05, colors.veryDarkBlue),
     sidebarActiveBackground: lighten(0.09, colors.veryDarkBlue),
@@ -223,6 +240,7 @@ export const buildDarkTheme = (input: Partial<Colors>): DefaultTheme => {
     mentionHoverBackground: lighten(0.15, colors.veryDarkBlue),
     tableSelected: colors.accent,
     buttonNeutralBackground: colors.almostBlack,
+    buttonNeutralHoverBackground: lighten(0.09, colors.veryDarkBlue),
     buttonNeutralText: colors.white,
     buttonNeutralBorder: colors.slateDark,
     tooltipBackground: colors.white,
@@ -254,10 +272,10 @@ export const buildDarkTheme = (input: Partial<Colors>): DefaultTheme => {
     codeAttrValue: "#ce9178",
     embedBorder: colors.black50,
     horizontalRule: lighten(0.1, colors.almostBlack),
-    noticeInfoText: colors.white,
-    noticeTipText: colors.white,
-    noticeWarningText: colors.white,
-    noticeSuccessText: colors.white,
+    noticeInfoText: mix(0.5, colors.slate, colors.white),
+    noticeTipText: mix(0.5, colors.brand.blue, colors.white),
+    noticeWarningText: mix(0.5, colors.brand.yellow, colors.white),
+    noticeSuccessText: mix(0.5, colors.brand.green, colors.white),
     progressBarBackground: colors.slate,
     scrollbarBackground: colors.black,
     scrollbarThumb: colors.lightBlack,

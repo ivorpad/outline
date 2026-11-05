@@ -3,23 +3,26 @@ import type { Location } from "history";
 import { observer } from "mobx-react";
 import * as React from "react";
 import { useEffect, useState } from "react";
+import type { match } from "react-router";
 import { useHistory } from "react-router-dom";
 import styled from "styled-components";
-import { UserPreference } from "@shared/types";
-import { ProsemirrorHelper } from "@shared/utils/ProsemirrorHelper";
+import { type NavigationNode, UserPreference } from "@shared/types";
+import { ProsemirrorDataHelper } from "@shared/utils/ProsemirrorDataHelper";
 import type Collection from "~/models/Collection";
 import type Document from "~/models/Document";
 import type Star from "~/models/Star";
 import type { RefHandle } from "~/components/EditableTitle";
+import { useActiveSidebarContext } from "~/hooks/useActiveSidebarContext";
 import useBoolean from "~/hooks/useBoolean";
 import { useCollectionMenuAction } from "~/hooks/useCollectionMenuAction";
+import { useComputed } from "~/hooks/useComputed";
 import useCurrentUser from "~/hooks/useCurrentUser";
 import { useDocumentMenuAction } from "~/hooks/useDocumentMenuAction";
-import { useLocationSidebarContext } from "~/hooks/useLocationSidebarContext";
 import usePolicy from "~/hooks/usePolicy";
 import useStores from "~/hooks/useStores";
 import CollectionMenu from "~/menus/CollectionMenu";
 import DocumentMenu from "~/menus/DocumentMenu";
+import * as Scenes from "~/routes/scenes";
 import { documentEditPath } from "~/utils/routeHelpers";
 import {
   useDragStar,
@@ -33,7 +36,7 @@ import SidebarExpansionContext, {
 } from "./SidebarExpansionContext";
 import CollectionLinkChildren from "./CollectionLinkChildren";
 import CollectionRow from "./CollectionRow";
-import DocumentLink from "./DocumentLink";
+import { DocumentTree } from "./DocumentTree";
 import DocumentRow from "./DocumentRow";
 import DropCursor from "./DropCursor";
 import Folder from "./Folder";
@@ -44,6 +47,7 @@ import SidebarDisclosureContext, {
   useSidebarDisclosure,
   useSidebarDisclosureState,
 } from "./SidebarDisclosureContext";
+import { useSidebarNavigation } from "./SidebarNavigation";
 
 type Props = {
   star: Star;
@@ -75,6 +79,8 @@ type StarredCollectionLinkProps = {
   isDraggingAnyStar: boolean;
 };
 
+const emptyChildDocuments: NavigationNode[] = [];
+
 const StarredDocumentLink = observer(function StarredDocumentLink({
   star,
   document,
@@ -102,13 +108,25 @@ const StarredDocumentLink = observer(function StarredDocumentLink({
     : undefined;
   const childDocuments = documentCollection
     ? documentCollection.getChildrenForDocument(document.id)
-    : [];
+    : emptyChildDocuments;
   const hasChildDocuments = childDocuments.length > 0;
   const displayChildDocuments = expanded && !isDragging;
-  const expansion = useSidebarExpansionState(
-    childDocuments,
-    documents.active?.id
+  const parentRef = React.useRef<HTMLDivElement>(null);
+
+  const getNavigationItems = React.useCallback(
+    () => [
+      {
+        id: document.id,
+        url: document.path,
+        title: document.title,
+        sidebarContext,
+        collapsedChildren: displayChildDocuments ? undefined : childDocuments,
+      },
+    ],
+    [document, sidebarContext, displayChildDocuments, childDocuments]
   );
+  useSidebarNavigation(parentRef, getNavigationItems);
+  const expansion = useSidebarExpansionState(childDocuments);
 
   const handleCascadeExpand = React.useCallback(() => {
     if (childDocuments.length) {
@@ -152,7 +170,7 @@ const StarredDocumentLink = observer(function StarredDocumentLink({
             document.fullWidth ??
             user.getPreference(UserPreference.FullWidthDocuments),
           title: input,
-          data: ProsemirrorHelper.getEmptyDocument(),
+          data: ProsemirrorDataHelper.getEmpty(),
         },
         { publish: true }
       );
@@ -171,7 +189,10 @@ const StarredDocumentLink = observer(function StarredDocumentLink({
   });
 
   const isActive = React.useCallback(
-    (match, location: Location<{ sidebarContext?: SidebarContextType }>) => {
+    (
+      match: match | null,
+      location: Location<{ sidebarContext?: SidebarContextType }>
+    ) => {
       if (location.state?.sidebarContext !== sidebarContext) {
         return false;
       }
@@ -197,10 +218,11 @@ const StarredDocumentLink = observer(function StarredDocumentLink({
         documentId={document.id}
         document={document}
         to={{ pathname: document.path, state: { sidebarContext } }}
+        parentRef={parentRef}
         depth={0}
         icon={icon}
         canEdit={can.update}
-        labelText={document.titleWithDefault}
+        labelText={document.displayTitle}
         onTitleChange={handleTitleChange}
         editableTitleRef={editableTitleRef}
         expanded={expanded}
@@ -222,19 +244,13 @@ const StarredDocumentLink = observer(function StarredDocumentLink({
           <SidebarExpansionContext.Provider value={expansion}>
             <Relative>
               <Folder expanded={displayChildDocuments}>
-                {childDocuments.map((node, index) => (
-                  <DocumentLink
-                    key={node.id}
-                    node={node}
-                    collection={documentCollection}
-                    activeDocument={documents.active}
-                    prefetchDocument={documents.prefetchDocument}
-                    isDraft={node.isDraft}
-                    depth={2}
-                    index={index}
-                    parentId={document.id}
-                  />
-                ))}
+                <DocumentTree
+                  nodes={childDocuments}
+                  depth={2}
+                  parentId={document.id}
+                  collection={documentCollection}
+                  prefetchDocument={documents.prefetchDocument}
+                />
               </Folder>
               {cursor}
             </Relative>
@@ -279,8 +295,7 @@ const StarredCollectionLink = observer(function StarredCollectionLink({
   const parentRef = React.useRef<HTMLDivElement>(null);
   const [{ isOver, canDrop }, dropRef] = useDropToChangeCollection(
     collection,
-    handleExpand,
-    parentRef
+    handleExpand
   );
 
   const handleRename = React.useCallback(() => {
@@ -288,6 +303,7 @@ const StarredCollectionLink = observer(function StarredCollectionLink({
   }, []);
 
   const handlePrefetch = React.useCallback(() => {
+    void Scenes.Collection.preload();
     void collection.fetchDocuments();
   }, [collection]);
 
@@ -298,7 +314,7 @@ const StarredCollectionLink = observer(function StarredCollectionLink({
           collectionId: collection.id,
           title: input,
           fullWidth: user.getPreference(UserPreference.FullWidthDocuments),
-          data: ProsemirrorHelper.getEmptyDocument(),
+          data: ProsemirrorDataHelper.getEmpty(),
         },
         { publish: true }
       );
@@ -336,7 +352,7 @@ const StarredCollectionLink = observer(function StarredCollectionLink({
           onExpand={handleExpand}
           onClickIntent={handlePrefetch}
           canEdit={can.update}
-          labelText={collection.name}
+          labelText={collection.displayName}
           onTitleChange={handleTitleChange}
           editableTitleRef={editableTitleRef}
           contextAction={contextMenuAction}
@@ -348,11 +364,15 @@ const StarredCollectionLink = observer(function StarredCollectionLink({
           dropRef={dropRef}
           isActiveDropTarget={isOver && canDrop}
         >
-          <CollectionLinkChildren
-            collection={collection}
-            expanded={displayChildDocuments}
-            prefetchDocument={documents.prefetchDocument}
-          />
+          {(newChild) => (
+            <CollectionLinkChildren
+              collection={collection}
+              expanded={displayChildDocuments}
+              prefetchDocument={documents.prefetchDocument}
+            >
+              {newChild}
+            </CollectionLinkChildren>
+          )}
         </CollectionRow>
       </Draggable>
       <Relative>{cursor}</Relative>
@@ -366,39 +386,45 @@ function StarredLink({ star }: Props) {
   const { documentId, collectionId } = star;
   const collection = collectionId ? collections.get(collectionId) : undefined;
   const document = documentId ? documents.get(documentId) : undefined;
-  const locationSidebarContext = useLocationSidebarContext();
+  const activeSidebarContext = useActiveSidebarContext();
   const sidebarContext = starredSidebarContext(
     star.documentId ?? star.collectionId ?? ""
   );
+  // Computed so that only the stars that become active or inactive re-render
+  // when navigating.
+  const isActive = useComputed(
+    () =>
+      star.documentId
+        ? star.documentId === ui.activeDocumentId
+        : star.collectionId === ui.activeCollectionId,
+    [star, ui]
+  );
+  const activeDocumentId = useComputed(
+    () => (isActive ? ui.activeDocumentId : undefined),
+    [isActive, ui]
+  );
   const [expanded, setExpanded] = useState(
-    (star.documentId
-      ? star.documentId === ui.activeDocumentId
-      : star.collectionId === ui.activeCollectionId) &&
-      sidebarContext === locationSidebarContext
+    isActive && sidebarContext === activeSidebarContext
   );
 
   const { event: disclosureEvent, onDisclosureClick } =
     useSidebarDisclosureState();
 
+  // The sidebar context is unique to the star, so a starred document also
+  // expands when one of its descendants is active in it.
   React.useEffect(() => {
     if (
-      star.documentId === ui.activeDocumentId &&
-      sidebarContext === locationSidebarContext
-    ) {
-      setExpanded(true);
-    } else if (
-      star.collectionId === ui.activeCollectionId &&
-      sidebarContext === locationSidebarContext
+      (isActive || star.documentId) &&
+      sidebarContext === activeSidebarContext
     ) {
       setExpanded(true);
     }
   }, [
+    isActive,
+    activeDocumentId,
     star.documentId,
-    star.collectionId,
-    ui.activeDocumentId,
-    ui.activeCollectionId,
     sidebarContext,
-    locationSidebarContext,
+    activeSidebarContext,
   ]);
 
   useEffect(() => {
@@ -430,6 +456,7 @@ function StarredLink({ star }: Props) {
 
   const handlePrefetch = React.useCallback(() => {
     if (documentId) {
+      Scenes.preloadEditor();
       void documents.prefetchDocument(documentId);
       const document = documents.get(documentId);
       const documentCollection = document?.collectionId
@@ -447,21 +474,31 @@ function StarredLink({ star }: Props) {
   const [reorderStarProps, dropToReorderRef] = useDropToReorderStar(getIndex);
   const [createStarProps, dropToStarRef] = useDropToCreateStar(getIndex);
 
-  const cursor = (
-    <>
-      {reorderStarProps.isDragging && (
-        <DropCursor
-          isActiveDrop={reorderStarProps.isOverCursor}
-          innerRef={dropToReorderRef}
-        />
-      )}
-      {createStarProps.isDragging && (
-        <DropCursor
-          isActiveDrop={createStarProps.isOverCursor}
-          innerRef={dropToStarRef}
-        />
-      )}
-    </>
+  const cursor = React.useMemo(
+    () => (
+      <>
+        {reorderStarProps.isDragging && (
+          <DropCursor
+            isActiveDrop={reorderStarProps.isOverCursor}
+            innerRef={dropToReorderRef}
+          />
+        )}
+        {createStarProps.isDragging && (
+          <DropCursor
+            isActiveDrop={createStarProps.isOverCursor}
+            innerRef={dropToStarRef}
+          />
+        )}
+      </>
+    ),
+    [
+      reorderStarProps.isDragging,
+      reorderStarProps.isOverCursor,
+      dropToReorderRef,
+      createStarProps.isDragging,
+      createStarProps.isOverCursor,
+      dropToStarRef,
+    ]
   );
 
   if (document) {

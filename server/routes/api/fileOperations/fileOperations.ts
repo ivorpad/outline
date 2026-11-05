@@ -1,5 +1,5 @@
-import Router from "koa-router";
-import type { WhereOptions } from "sequelize";
+import Router from "@koa/router";
+import { Op, type WhereOptions } from "sequelize";
 import { UserRole } from "@shared/types";
 import { ValidationError } from "@server/errors";
 import auth from "@server/middlewares/authentication";
@@ -24,6 +24,7 @@ router.post(
     const { user } = ctx.state.auth;
 
     const fileOperation = await FileOperation.findByPk(id, {
+      userId: user.id,
       rejectOnEmpty: true,
     });
 
@@ -47,6 +48,27 @@ router.post(
     const where: WhereOptions<FileOperation> = {
       teamId: user.teamId,
       type,
+      // Exclude operations on the personal collections of other users.
+      [Op.and]: [
+        {
+          [Op.or]: [
+            { "$collection.ownerId$": null },
+            { "$collection.ownerId$": user.id },
+          ],
+        },
+        {
+          [Op.or]: [
+            { "$document.collection.ownerId$": null },
+            { "$document.collection.ownerId$": user.id },
+          ],
+        },
+        {
+          [Op.or]: [
+            { "options.personalOwnerId": null },
+            { "options.personalOwnerId": user.id },
+          ],
+        },
+      ],
     };
     const team = await Team.findByPk(user.teamId);
     authorize(user, "update", team);
@@ -77,7 +99,8 @@ const handleFileOperationsRedirect = async (
   const id = (ctx.input.body.id ?? ctx.input.query.id) as string;
   const { user } = ctx.state.auth;
 
-  const fileOperation = await FileOperation.unscoped().findByPk(id, {
+  const fileOperation = await FileOperation.findByPk(id, {
+    userId: user.id,
     rejectOnEmpty: true,
   });
   authorize(user, "read", fileOperation);
@@ -90,17 +113,14 @@ const handleFileOperationsRedirect = async (
   ctx.redirect(accessUrl);
 };
 
-router.get(
+router.register(
   "fileOperations.redirect",
-  auth(),
-  validate(T.FileOperationsRedirectSchema),
-  handleFileOperationsRedirect
-);
-router.post(
-  "fileOperations.redirect",
-  auth(),
-  validate(T.FileOperationsRedirectSchema),
-  handleFileOperationsRedirect
+  ["get", "post"],
+  [
+    auth(),
+    validate(T.FileOperationsRedirectSchema),
+    handleFileOperationsRedirect,
+  ]
 );
 
 router.post(

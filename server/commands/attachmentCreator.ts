@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { AttachmentPreset } from "@shared/types";
+import { AttachmentPreset } from "@shared/types";
 import type { User } from "@server/models";
 import { Attachment } from "@server/models";
 import AttachmentHelper from "@server/models/helpers/AttachmentHelper";
@@ -8,7 +8,7 @@ import type { APIContext } from "@server/types";
 import type { RequestInit } from "@server/utils/fetch";
 
 type BaseProps = {
-  /** The ID of the attachment */
+  /** The ID of the attachment, when provided creation is idempotent */
   id?: string;
   /** The name of the attachment */
   name: string;
@@ -45,9 +45,24 @@ export default async function attachmentCreator({
   fetchOptions,
   ...rest
 }: Props): Promise<Attachment | undefined> {
+  // Scoped to the team so a caller-supplied id can never resolve an attachment
+  // outside of it – an id that belongs elsewhere falls through to the insert
+  // and collides there, as it did before.
+  if (id) {
+    const existing = await Attachment.findOne({
+      where: { id, teamId: user.teamId },
+      transaction: ctx.context.transaction,
+    });
+
+    if (existing) {
+      return existing;
+    }
+  }
+
+  const modelId = id ?? randomUUID();
   const acl = AttachmentHelper.presetToAcl(preset);
   const key = AttachmentHelper.getKey({
-    id: randomUUID(),
+    id: modelId,
     name,
     userId: user.id,
   });
@@ -56,13 +71,15 @@ export default async function attachmentCreator({
 
   if ("url" in rest) {
     const { url } = rest;
-    const res = await FileStorage.storeFromUrl(url, key, acl, fetchOptions);
+    const res = await FileStorage.storeFromUrl(url, key, acl, fetchOptions, {
+      imagesOnly: preset === AttachmentPreset.Avatar,
+    });
 
     if (!res) {
       return;
     }
     attachment = await Attachment.createWithCtx(ctx, {
-      id,
+      id: modelId,
       key,
       acl,
       size: res.contentLength,
@@ -81,7 +98,7 @@ export default async function attachmentCreator({
     });
 
     attachment = await Attachment.createWithCtx(ctx, {
-      id,
+      id: modelId,
       key,
       acl,
       size: buffer.length,

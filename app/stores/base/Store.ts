@@ -8,8 +8,15 @@ import {
   lowerFirst,
   orderBy,
 } from "es-toolkit/compat";
-import { observable, action, computed, runInAction } from "mobx";
+import {
+  action,
+  computed,
+  makeObservable,
+  observable,
+  runInAction,
+} from "mobx";
 import pluralize from "pluralize";
+import { isUUID } from "validator";
 import { Pagination } from "@shared/constants";
 import { type JSONObject } from "@shared/types";
 import type RootStore from "~/stores/RootStore";
@@ -23,12 +30,20 @@ import type { PaginationParams, PartialExcept, Properties } from "~/types";
 import { client } from "~/utils/ApiClient";
 import { AuthorizationError, NotFoundError } from "~/utils/errors";
 import ParanoidModel from "~/models/base/ParanoidModel";
+import StorePersistence from "./StorePersistence";
+
+// A concrete model constructor along with the static members of Model.
+type ModelClass<T extends Model> = (new (
+  fields: PartialExcept<T, "id">,
+  store: Store<T>
+) => T) &
+  Pick<typeof Model, keyof typeof Model>;
 
 type ListPredicate<T> =
   | ((value: T, index: number, collection: ArrayLike<T>) => boolean)
   | PropertyKey
   | [PropertyKey, unknown]
-  | Partial<T>;
+  | { [P in keyof T]?: T[P] extends object ? object : T[P] };
 
 export enum RPCAction {
   Info = "info",
@@ -53,6 +68,14 @@ export type PaginatedResponse<T> = T[] & {
 // oxlint-disable-next-line no-explicit-any
 export type FetchPageParams = PaginationParams & Record<string, any>;
 
+/**
+ * A store that related models found in an API response can be added to.
+ */
+interface RelatedStore {
+  responseKey: string;
+  add(item: PartialExcept<Model, "id">): unknown;
+}
+
 export default abstract class Store<T extends Model> {
   @observable
   data: Map<string, T> = new Map();
@@ -69,13 +92,27 @@ export default abstract class Store<T extends Model> {
   // oxlint-disable-next-line no-explicit-any
   requests: Map<string, Promise<any>> = new Map();
 
-  model: typeof Model;
+  model: ModelClass<T>;
 
   modelName: string;
 
   apiEndpoint: string;
 
+  /**
+   * The key under which this store's models appear in API responses that
+   * return more than one kind of model, defaults to the API endpoint name.
+   */
+  responseKey: string;
+
+  /**
+   * Whether the store's data should be persisted to IndexedDB, and restored
+   * at boot, once persistence is enabled for the authenticated team.
+   */
+  persistable = false;
+
   rootStore: RootStore;
+
+  protected persistence?: StorePersistence<T>;
 
   actions = [
     RPCAction.Info,
@@ -85,7 +122,7 @@ export default abstract class Store<T extends Model> {
     RPCAction.Delete,
   ];
 
-  constructor(rootStore: RootStore, model: typeof Model) {
+  constructor(rootStore: RootStore, model: ModelClass<T>) {
     this.rootStore = rootStore;
     this.model = model;
     this.modelName = model.modelName;
@@ -93,24 +130,80 @@ export default abstract class Store<T extends Model> {
     if (!this.apiEndpoint) {
       this.apiEndpoint = pluralize(lowerFirst(model.modelName));
     }
+
+    if (!this.responseKey) {
+      this.responseKey = this.apiEndpoint;
+    }
+
+    makeObservable(this);
   }
 
   @action
   clear() {
     this.data.clear();
+    this.fetchAllResults.clear();
+    void this.persistence?.clear();
+  }
+
+  /**
+   * Enables persistence of this store's data to IndexedDB, scoped to the
+   * given team, and hydrates any previously persisted records into the store.
+   * A no-op if the store is not persistable, persistence is unsupported, or it
+   * is already enabled, so it is safe to call on every store and more than once.
+   *
+   * @param teamId the ID of the team the persisted data belongs to.
+   * @returns a promise that resolves when hydration is complete.
+   */
+  async enablePersistence(teamId: string): Promise<void> {
+    if (
+      !this.persistable ||
+      this.persistence ||
+      !StorePersistence.isSupported
+    ) {
+      return;
+    }
+
+    this.persistence = new StorePersistence<T>(this, teamId);
+    await this.persistence.hydrate();
+  }
+
+  /**
+   * Disables persistence of this store's data, closing the connection to the
+   * database without removing anything that was already persisted. Safe to call
+   * whether or not persistence is currently enabled.
+   */
+  disablePersistence(): void {
+    this.persistence?.disable();
+    this.persistence = undefined;
   }
 
   addPolicies = (policies: Policy[]) => {
     policies?.forEach((policy) => this.rootStore.policies.add(policy));
   };
 
-  findByQuery = (query: string, options?: { maxResults: number }): T[] => {
+  /**
+   * Finds the items that match the given query, ordered by relevance.
+   *
+   * @param query the search query, all items are returned when it is empty.
+   * @param options the maximum number of results, and a weight applied to the
+   * relevance score of each item, for example how familiar it is to the user.
+   * @returns the matching items.
+   */
+  findByQuery = (
+    query: string,
+    options?: { maxResults?: number; weight?: (item: T) => number }
+  ): T[] => {
     const normalized = deburr((query ?? "").trim().toLocaleLowerCase());
+    const weight = options?.weight;
 
     if (!normalized) {
-      return this.orderedData
-        .filter((item: T & Searchable) => !item.searchSuppressed)
-        .slice(0, options?.maxResults);
+      const items = this.orderedData.filter(
+        (item: T & Searchable) => !item.searchSuppressed
+      );
+
+      return (
+        weight ? items.sort((a, b) => weight(b) - weight(a)) : items
+      ).slice(0, options?.maxResults);
     }
 
     return this.orderedData
@@ -138,9 +231,11 @@ export default abstract class Store<T extends Model> {
 
         return {
           score:
-            seachables
+            (seachables
               .map((searchable) => commandScore(normalized, searchable))
-              .reduce((a, b) => a + b, 0) / seachables.length,
+              .reduce((a, b) => a + b, 0) /
+              seachables.length) *
+            (weight?.(item) ?? 1),
           item,
         };
       })
@@ -158,21 +253,35 @@ export default abstract class Store<T extends Model> {
 
       if (existingModel) {
         existingModel.updateData(item);
+        this.persistence?.persist(existingModel.id);
         return existingModel;
       }
 
-      // @ts-expect-error TS thinks that we're instantiating an abstract class here
-      const newModel = new ModelClass(item, this);
+      const newModel: T = new ModelClass(item, this);
       this.data.set(newModel.id, newModel);
+      this.persistence?.persist(newModel.id);
+      this.fetchAllResults.clear();
       return newModel;
     }
 
+    if (!this.data.has(item.id)) {
+      this.fetchAllResults.clear();
+    }
     this.data.set(item.id, item);
+    this.persistence?.persist(item.id);
     return item;
   };
 
+  /**
+   * Remove a model, and any models that cascade from it, from the store.
+   *
+   * @param id the ID of the model to remove.
+   * @param options.permanent whether soft-deletable models should be evicted
+   * from the store entirely rather than marked as deleted. Use when the model
+   * is gone for good, or is no longer accessible to the current user.
+   */
   @action
-  remove(id: string): void {
+  remove(id: string, options?: { permanent?: boolean }): void {
     const model = this.data.get(id);
     if (!model) {
       return;
@@ -195,10 +304,9 @@ export default abstract class Store<T extends Model> {
           }
 
           if (deleteBehavior === "cascade") {
-            store.remove(item.id);
+            store.remove(item.id, options);
           } else if (deleteBehavior === "null") {
-            // @ts-expect-error TODO
-            item[relation.idKey] = null;
+            Reflect.set(item, relation.idKey, null);
           }
         });
       }
@@ -211,13 +319,18 @@ export default abstract class Store<T extends Model> {
 
     LifecycleManager.executeHooks(model.constructor, "beforeRemove", model);
 
-    if (model instanceof ParanoidModel) {
+    if (model instanceof ParanoidModel && !options?.permanent) {
       model.deletedAt = new Date().toISOString();
     } else {
       this.data.delete(id);
     }
 
     LifecycleManager.executeHooks(model.constructor, "afterRemove", model);
+    this.fetchAllResults.clear();
+
+    // Persists the soft-deleted model, or removes the persisted record if the
+    // model was hard-deleted from the store.
+    this.persistence?.persist(id);
   }
 
   @action
@@ -241,8 +354,7 @@ export default abstract class Store<T extends Model> {
           if (archiveBehavior === "cascade") {
             store.addToArchive(item);
           } else if (archiveBehavior === "null") {
-            // @ts-expect-error TODO
-            item[relation.idKey] = null;
+            Reflect.set(item, relation.idKey, null);
           }
         });
       }
@@ -297,7 +409,7 @@ export default abstract class Store<T extends Model> {
         ...options,
       });
 
-      return runInAction(`create#${this.modelName}`, () => {
+      return runInAction(() => {
         invariant(res?.data, "Data should be available");
         this.addPolicies(res.policies);
         return this.add(res.data);
@@ -321,7 +433,7 @@ export default abstract class Store<T extends Model> {
         ...options,
       });
 
-      return runInAction(`update#${this.modelName}`, () => {
+      return runInAction(() => {
         invariant(res?.data, "Data should be available");
         this.addPolicies(res.policies);
         return this.add(res.data);
@@ -354,6 +466,13 @@ export default abstract class Store<T extends Model> {
     }
   }
 
+  /**
+   * Whether individual models can be fetched by ID from this store.
+   */
+  get canFetchById(): boolean {
+    return this.actions.includes(RPCAction.Info);
+  }
+
   @action
   async fetch(
     id: string,
@@ -381,7 +500,7 @@ export default abstract class Store<T extends Model> {
           id,
         })
         .then((res) =>
-          runInAction(`info#${this.modelName}`, () => {
+          runInAction(() => {
             invariant(res?.data, "Data should be available");
             this.addPolicies(res.policies);
             resolve(this.add(accessor(res)));
@@ -407,7 +526,8 @@ export default abstract class Store<T extends Model> {
     return promise;
   }
 
-  @action
+  // Not annotated: subclasses replace this field, and MobX makes an annotated
+  // field non-writable. The state changes run in runInAction already.
   fetchPage = async (
     params?: FetchPageParams
   ): Promise<PaginatedResponse<T>> => {
@@ -415,33 +535,20 @@ export default abstract class Store<T extends Model> {
       throw new Error(`Cannot list ${this.modelName}`);
     }
 
-    this.isFetching = true;
-
-    try {
-      const res = await client.post(`/${this.apiEndpoint}.list`, params);
-      invariant(res?.data, "Data not available");
-
-      let response: PaginatedResponse<T> = [];
-
-      runInAction(`list#${this.modelName}`, () => {
-        this.addPolicies(res.policies);
-        response = res.data.map(this.add);
-        this.isLoaded = true;
-      });
-
-      response[PAGINATION_SYMBOL] = res.pagination;
-      return response;
-    } finally {
-      this.isFetching = false;
-    }
+    return this.fetchPaginated(`/${this.apiEndpoint}.list`, params);
   };
 
+  /**
+   * Fetches every page of the list endpoint.
+   *
+   * @param params the request parameters.
+   * @returns all fetched items.
+   */
   @action
   fetchAll = async (
-    // oxlint-disable-next-line no-explicit-any
-    params?: Record<string, any>
+    params: FetchPageParams = {}
   ): Promise<PaginatedResponse<T>> => {
-    const limit = params?.limit ?? Pagination.defaultLimit;
+    const limit = params.limit ?? Pagination.defaultLimit;
     const response = await this.fetchPage({ ...params, limit });
 
     invariant(
@@ -462,14 +569,29 @@ export default abstract class Store<T extends Model> {
       ...(fetchPages.length ? await Promise.all(fetchPages) : []),
     ]);
 
-    if (params?.withRelations) {
+    if (params.withRelations) {
       await Promise.all(
         this.orderedData.map((integration) => integration.loadRelations())
       );
     }
 
+    this.fetchAllResults.set(JSON.stringify(params), results);
     return results;
   };
+
+  /**
+   * Fetches every page of the list endpoint unless the same params were
+   * fetched before and no model has been added to or removed from the store
+   * since. Use for reference lists that are loaded on mount.
+   *
+   * @param params the request parameters.
+   * @returns all fetched items.
+   */
+  fetchAllIfNeeded = async (
+    params: FetchPageParams = {}
+  ): Promise<PaginatedResponse<T>> =>
+    this.fetchAllResults.get(JSON.stringify(params)) ??
+    (await this.fetchAll(params));
 
   @computed
   get orderedData(): T[] {
@@ -482,7 +604,6 @@ export default abstract class Store<T extends Model> {
    * @param predicate A function that returns true if the item matches, or an object with the properties to match.
    */
   find = (predicate: ListPredicate<T>): T | undefined =>
-    // @ts-expect-error not sure why T is incompatible
     find(this.orderedData, predicate);
 
   /**
@@ -491,6 +612,80 @@ export default abstract class Store<T extends Model> {
    * @param predicate A function that returns true if the item matches, or an object with the properties to match.
    */
   filter = (predicate: ListPredicate<T>): T[] =>
-    // @ts-expect-error not sure why T is incompatible
     filter(this.orderedData, predicate);
+
+  /**
+   * Get an item from the store by ID, or by the urlId at the end of a URL
+   * slug. A UUID cannot end with a urlId, so the slower search by urlId is
+   * skipped for UUIDs, and observers do not track every item in the store.
+   *
+   * @param id the ID or URL slug of the item.
+   * @returns the matching item, if it is in the store.
+   */
+  protected getByIdOrUrlId(id: string): T | undefined {
+    const item = this.data.get(id);
+    if (item || !id || isUUID(id)) {
+      return item;
+    }
+    return this.orderedData.find(
+      (model) =>
+        "urlId" in model &&
+        typeof model.urlId === "string" &&
+        id.endsWith(model.urlId)
+    );
+  }
+
+  /**
+   * Fetch a page of items from the API and add them to the store, along with
+   * any related models in the response that belong to other stores. Items are
+   * read from the response data directly when it is an array, otherwise from
+   * the key of each store.
+   *
+   * @param endpoint the API endpoint to request.
+   * @param params the request parameters.
+   * @param related the stores that related models in the response are added to.
+   * @returns the fetched items, with pagination information attached.
+   */
+  protected async fetchPaginated(
+    endpoint: string,
+    params?: FetchPageParams,
+    related: RelatedStore[] = []
+  ): Promise<PaginatedResponse<T>> {
+    runInAction(() => {
+      this.isFetching = true;
+    });
+
+    try {
+      const res = await client.post(endpoint, params);
+      invariant(res?.data, "Data not available");
+
+      let response: PaginatedResponse<T> = [];
+
+      runInAction(() => {
+        this.addPolicies(res.policies);
+
+        related.forEach((store) => {
+          res.data[store.responseKey]?.forEach(
+            (item: PartialExcept<Model, "id">) => store.add(item)
+          );
+        });
+
+        const items = Array.isArray(res.data)
+          ? res.data
+          : res.data[this.responseKey];
+        response = items.map(this.add);
+        this.isLoaded = true;
+      });
+
+      response[PAGINATION_SYMBOL] = res.pagination;
+      return response;
+    } finally {
+      runInAction(() => {
+        this.isFetching = false;
+      });
+    }
+  }
+
+  /** Results of `fetchAll` calls keyed by their params, see `fetchAllIfNeeded`. */
+  private fetchAllResults = new Map<string, PaginatedResponse<T>>();
 }

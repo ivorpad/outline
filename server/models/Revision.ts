@@ -1,6 +1,9 @@
 import type { InferAttributes, InferCreationAttributes } from "sequelize";
+import { sortBy } from "es-toolkit/compat";
 import { Op } from "sequelize";
+import { isUUID } from "validator";
 import {
+  AllowNull,
   DataType,
   BelongsTo,
   Column,
@@ -11,13 +14,12 @@ import {
   Length as SimpleLength,
   BeforeDestroy,
 } from "sequelize-typescript";
-import type { ProsemirrorData } from "@shared/types";
+import type { ProsemirrorData, SourceMetadata } from "@shared/types";
 import { DocumentValidation, RevisionValidation } from "@shared/validations";
 import type { APIContext } from "@server/types";
 import Document from "./Document";
 import User from "./User";
 import ParanoidModel from "./base/ParanoidModel";
-import Fix from "./decorators/Fix";
 import IsHexColor from "./validators/IsHexColor";
 import Length from "./validators/Length";
 import { SkipChangeset } from "./decorators/Changeset";
@@ -32,7 +34,6 @@ import { SkipChangeset } from "./decorators/Changeset";
   ],
 }))
 @Table({ tableName: "revisions", modelName: "revision" })
-@Fix
 class Revision extends ParanoidModel<
   InferAttributes<Revision>,
   Partial<InferCreationAttributes<Revision>>
@@ -47,7 +48,7 @@ class Revision extends ParanoidModel<
     max: 255,
     msg: `editorVersion must be 255 characters or less`,
   })
-  @Column
+  @Column(DataType.STRING)
   @SkipChangeset
   editorVersion: string | null;
 
@@ -56,7 +57,7 @@ class Revision extends ParanoidModel<
     max: DocumentValidation.maxTitleLength,
     msg: `Revision title must be ${DocumentValidation.maxTitleLength} characters or less`,
   })
-  @Column
+  @Column(DataType.STRING)
   @SkipChangeset
   title: string;
 
@@ -65,7 +66,7 @@ class Revision extends ParanoidModel<
     max: RevisionValidation.maxNameLength,
     msg: `Revision name must be ${RevisionValidation.maxNameLength} characters or less`,
   })
-  @Column
+  @Column(DataType.STRING)
   @SkipChangeset
   name: string | null;
 
@@ -86,15 +87,21 @@ class Revision extends ParanoidModel<
   content: ProsemirrorData | null;
 
   /** The icon at the time of the revision. */
-  @Column
+  @Column(DataType.STRING)
   @SkipChangeset
   icon: string | null;
 
   /** The color at the time of the revision. */
   @IsHexColor
-  @Column
+  @Column(DataType.STRING)
   @SkipChangeset
   color: string | null;
+
+  /** Metadata about how the revision came to be, such as the authentication type used. */
+  @AllowNull
+  @Column(DataType.JSONB)
+  @SkipChangeset
+  sourceMetadata: SourceMetadata | null;
 
   // associations
 
@@ -115,10 +122,11 @@ class Revision extends ParanoidModel<
   /** Array of user IDs who collaborated on this revision */
   @Column(DataType.ARRAY(DataType.UUID))
   @SkipChangeset
-  collaboratorIds: string[] = [];
+  collaboratorIds: string[];
 
   /**
-   * Get the collaborators for this revision.
+   * Get the collaborators for this revision, with the author first and the
+   * others in the order they were recorded.
    */
   get collaborators() {
     const otherCollaboratorIds = (this.collaboratorIds ?? []).filter(
@@ -136,7 +144,10 @@ class Revision extends ParanoidModel<
         },
       },
       paranoid: false,
-    }).then((others) => [this.user, ...others]);
+    }).then((others) => [
+      this.user,
+      ...sortBy(others, [(user) => otherCollaboratorIds.indexOf(user.id)]),
+    ]);
   }
 
   // hooks
@@ -160,6 +171,65 @@ class Revision extends ParanoidModel<
     return this.findOne({
       where: {
         documentId,
+      },
+      order: [["createdAt", "DESC"]],
+    });
+  }
+
+  /**
+   * Find a revision by id that belongs to the given document.
+   *
+   * @param id The id of the revision.
+   * @param documentId The id of the document the revision must belong to.
+   * @returns A Promise that resolves to a Revision model, or null if not found.
+   */
+  static async findByIdForDocument(id: string, documentId: string) {
+    if (!isUUID(id)) {
+      return null;
+    }
+
+    return this.findOne({
+      where: {
+        id,
+        documentId,
+      },
+    });
+  }
+
+  /**
+   * Find the latest revision of a document that a user authored or
+   * collaborated on.
+   *
+   * @param documentId The id of the document.
+   * @param userId The id of the user.
+   * @returns A Promise that resolves to a Revision model, or null if not found.
+   */
+  static findLatestByUser(documentId: string, userId: string) {
+    return this.findOne({
+      where: {
+        documentId,
+        [Op.or]: [{ userId }, { collaboratorIds: { [Op.contains]: [userId] } }],
+      },
+      order: [["createdAt", "DESC"]],
+    });
+  }
+
+  /**
+   * Find the revision that shows a document as it was at a given time, the
+   * latest revision created at or before that time.
+   *
+   * @param documentId The id of the document.
+   * @param date The point in time.
+   * @returns A Promise that resolves to a Revision model, or null if the
+   * document had no revision at that time.
+   */
+  static findAt(documentId: string, date: Date) {
+    return this.findOne({
+      where: {
+        documentId,
+        createdAt: {
+          [Op.lte]: date,
+        },
       },
       order: [["createdAt", "DESC"]],
     });
@@ -201,6 +271,8 @@ class Revision extends ParanoidModel<
     collaboratorIds?: string[]
   ) {
     const revision = this.buildFromDocument(document);
+    const authType = ctx.context.auth?.type;
+    revision.sourceMetadata = authType ? { authType } : null;
 
     if (collaboratorIds) {
       revision.collaboratorIds = collaboratorIds;

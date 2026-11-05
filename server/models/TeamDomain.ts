@@ -1,34 +1,39 @@
 import emailProviders from "email-providers";
-import type { InferAttributes, InferCreationAttributes } from "sequelize";
+import type {
+  InferAttributes,
+  InferCreationAttributes,
+  SaveOptions,
+} from "sequelize";
 import {
   Column,
+  DataType,
   Table,
   BelongsTo,
   ForeignKey,
+  Is,
   NotEmpty,
-  NotIn,
   BeforeValidate,
   BeforeCreate,
 } from "sequelize-typescript";
 import { TeamValidation } from "@shared/validations";
 import env from "@server/env";
 import { ValidationError } from "@server/errors";
+import { LockHelper } from "@server/storage/LockHelper";
 import Team from "./Team";
 import User from "./User";
 import IdModel from "./base/IdModel";
-import Fix from "./decorators/Fix";
 import IsFQDN from "./validators/IsFQDN";
 import Length from "./validators/Length";
 
 @Table({ tableName: "team_domains", modelName: "team_domain" })
-@Fix
 class TeamDomain extends IdModel<
   InferAttributes<TeamDomain>,
   Partial<InferCreationAttributes<TeamDomain>>
 > {
-  @NotIn({
-    args: env.isCloudHosted ? [emailProviders] : [],
-    msg: "You chose a restricted domain, please try another.",
+  @Is("notRestricted", (value: string) => {
+    if (env.isCloudHosted && emailProviders.includes(value)) {
+      throw new Error("You chose a restricted domain, please try another.");
+    }
   })
   @NotEmpty
   @Length({
@@ -36,7 +41,7 @@ class TeamDomain extends IdModel<
     msg: `name must be ${TeamValidation.maxDomainLength} characters or less`,
   })
   @IsFQDN
-  @Column
+  @Column(DataType.STRING)
   name: string;
 
   // associations
@@ -45,14 +50,14 @@ class TeamDomain extends IdModel<
   team: Team;
 
   @ForeignKey(() => Team)
-  @Column
+  @Column(DataType.UUID)
   teamId: string;
 
   @BelongsTo(() => User, "createdById")
   createdBy: User;
 
   @ForeignKey(() => User)
-  @Column
+  @Column(DataType.UUID)
   createdById: string;
 
   // hooks
@@ -63,13 +68,24 @@ class TeamDomain extends IdModel<
   }
 
   @BeforeCreate
-  static async checkLimit(model: TeamDomain) {
+  static async checkLimit(model: TeamDomain, options: SaveOptions) {
     if (!env.isCloudHosted) {
       return;
     }
 
+    const { transaction } = options;
+
+    // Serialize concurrent creation for the team, otherwise every request can
+    // read the same count and pass the check.
+    await LockHelper.acquire(
+      model.sequelize,
+      `teamDomains:${model.teamId}`,
+      transaction
+    );
+
     const count = await this.count({
       where: { teamId: model.teamId },
+      transaction,
     });
     if (count >= TeamValidation.maxDomains) {
       throw ValidationError(

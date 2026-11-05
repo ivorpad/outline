@@ -118,6 +118,15 @@ export function NotFoundError(message = "Resource not found") {
   });
 }
 
+export function DocumentConflictError(
+  message = "Document has been modified since the provided revision"
+) {
+  return httpErrors(409, message, {
+    id: "document_conflict",
+    isReportable: false,
+  });
+}
+
 export function ParamRequiredError(message = "Required parameter missing") {
   return httpErrors(400, message, {
     id: "param_required",
@@ -205,7 +214,7 @@ export function TeamDomainRequiredError(
 }
 
 export function GmailAccountCreationError(
-  message = "Cannot create account using personal gmail address"
+  message = "Cannot create account using personal Gmail address"
 ) {
   return httpErrors(400, message, {
     id: "gmail_account_creation",
@@ -239,6 +248,24 @@ export function UnprocessableEntityError(
   return httpErrors(422, message, {
     id: "unprocessable_entity",
     isReportable: false,
+  });
+}
+
+export function InvalidClientMetadataError(
+  message = "The client metadata document is invalid"
+) {
+  return httpErrors(422, message, {
+    id: "invalid_client_metadata",
+    isReportable: false,
+  });
+}
+
+export function RequestTimeoutError(
+  message = "Request took too long to complete"
+) {
+  return httpErrors(503, message, {
+    id: "request_timeout",
+    isReportable: true,
   });
 }
 

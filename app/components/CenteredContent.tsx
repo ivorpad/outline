@@ -1,6 +1,6 @@
 import * as React from "react";
 import styled from "styled-components";
-import breakpoint from "styled-components-breakpoint";
+import { breakpoint } from "@shared/styles/breakpoint";
 import { EditorStyleHelper } from "@shared/editor/styles/EditorStyleHelper";
 
 type Props = {
@@ -10,9 +10,10 @@ type Props = {
 };
 
 const Container = styled.div<Props>`
+  position: relative;
   width: 100%;
   max-width: 100vw;
-  padding: ${(props) => (props.withStickyHeader ? "4px 12px" : "60px 12px")};
+  padding: ${(props) => (props.withStickyHeader ? "4px 16px" : "60px 16px")};
 
   ${breakpoint("tablet")`
     padding: ${(props: Props) =>

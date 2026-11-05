@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { subSeconds } from "date-fns";
 import { Scope } from "@shared/types";
 import { OAuthInterface } from "./OAuthInterface";
+import { OAuthAuthentication } from "@server/models";
 import {
   buildOAuthAuthentication,
   buildOAuthClient,
@@ -86,6 +88,64 @@ describe("OAuthInterface", () => {
     it("should return false for invalid refresh token", async () => {
       const result = await OAuthInterface.getRefreshToken("invalid_token");
       expect(result).toBe(false);
+    });
+
+    it("should revoke the entire grant when a refresh token is reused outside the reuse interval", async () => {
+      const user = await buildUser();
+      const scope = [Scope.Read];
+      const grantId = randomUUID();
+      const oAuthClient = await buildOAuthClient({ teamId: user.teamId });
+      const rotated = await buildOAuthAuthentication({
+        user,
+        oauthClientId: oAuthClient.id,
+        scope,
+        grantId,
+      });
+      const sibling = await buildOAuthAuthentication({
+        user,
+        oauthClientId: oAuthClient.id,
+        scope,
+        grantId,
+      });
+      const refreshToken = rotated.refreshToken!;
+
+      // Simulate a rotation that happened longer ago than the reuse interval.
+      await rotated.destroy();
+      await OAuthAuthentication.update(
+        { deletedAt: subSeconds(new Date(), 60) },
+        { where: { id: rotated.id }, paranoid: false, silent: true }
+      );
+
+      const result = await OAuthInterface.getRefreshToken(refreshToken);
+      expect(result).toBe(false);
+      expect(await OAuthAuthentication.findByPk(sibling.id)).toBeNull();
+    });
+
+    it("should not revoke the grant when a rotated refresh token is replayed within the reuse interval", async () => {
+      const user = await buildUser();
+      const scope = [Scope.Read];
+      const grantId = randomUUID();
+      const oAuthClient = await buildOAuthClient({ teamId: user.teamId });
+      const rotated = await buildOAuthAuthentication({
+        user,
+        oauthClientId: oAuthClient.id,
+        scope,
+        grantId,
+      });
+      const sibling = await buildOAuthAuthentication({
+        user,
+        oauthClientId: oAuthClient.id,
+        scope,
+        grantId,
+      });
+      const refreshToken = rotated.refreshToken!;
+
+      // Simulate a rotation that just happened, as with a concurrent refresh.
+      await rotated.destroy();
+
+      const result = await OAuthInterface.getRefreshToken(refreshToken);
+      expect(result).toBe(false);
+      expect(await OAuthAuthentication.findByPk(sibling.id)).not.toBeNull();
     });
   });
 
@@ -194,6 +254,49 @@ describe("OAuthInterface", () => {
       expect(result).toBe(true);
     });
 
+    it("should allow a loopback redirect URI on any port per RFC 8252", async () => {
+      const loopbackClient = {
+        ...client,
+        redirectUris: ["http://localhost/callback", "http://127.0.0.1:8080/cb"],
+      };
+      for (const redirectUri of [
+        "http://localhost:54321/callback",
+        "http://127.0.0.1:43123/cb",
+      ]) {
+        const result = await OAuthInterface.validateRedirectUri(
+          redirectUri,
+          loopbackClient
+        );
+        expect(result).toBe(true);
+      }
+    });
+
+    it("should not ignore the host or path of a loopback redirect URI", async () => {
+      const loopbackClient = {
+        ...client,
+        redirectUris: ["http://localhost/callback"],
+      };
+      for (const redirectUri of [
+        "http://127.0.0.1:54321/callback",
+        "http://localhost:54321/other",
+        "https://localhost:54321/callback",
+      ]) {
+        const result = await OAuthInterface.validateRedirectUri(
+          redirectUri,
+          loopbackClient
+        );
+        expect(result).toBe(false);
+      }
+    });
+
+    it("should not ignore the port of a non-loopback redirect URI", async () => {
+      const result = await OAuthInterface.validateRedirectUri(
+        "https://example.com:8443/callback",
+        client
+      );
+      expect(result).toBe(false);
+    });
+
     it("should reject HTTPS loopback redirect URIs (must be HTTP per RFC 8252)", async () => {
       const httpsLoopbackClient = {
         ...client,
@@ -218,6 +321,44 @@ describe("OAuthInterface", () => {
         loopbackClient
       );
       expect(result).toBe(false); // Fragment check happens first
+    });
+
+    it("should allow private-use scheme redirect URIs per RFC 8252", async () => {
+      const nativeClient = {
+        ...client,
+        redirectUris: ["com.example.app:/oauth2redirect", "myapp://callback"],
+      };
+      for (const redirectUri of nativeClient.redirectUris) {
+        const result = await OAuthInterface.validateRedirectUri(
+          redirectUri,
+          nativeClient
+        );
+        expect(result).toBe(true);
+      }
+    });
+
+    it("should reject private-use scheme redirect URIs that are not registered", async () => {
+      const nativeClient = {
+        ...client,
+        redirectUris: ["com.example.app:/oauth2redirect"],
+      };
+      const result = await OAuthInterface.validateRedirectUri(
+        "com.attacker.app:/oauth2redirect",
+        nativeClient
+      );
+      expect(result).toBe(false);
+    });
+
+    it("should reject private-use scheme redirect URI with fragment", async () => {
+      const nativeClient = {
+        ...client,
+        redirectUris: ["com.example.app:/oauth2redirect#fragment"],
+      };
+      const result = await OAuthInterface.validateRedirectUri(
+        "com.example.app:/oauth2redirect#fragment",
+        nativeClient
+      );
+      expect(result).toBe(false);
     });
   });
 
@@ -351,6 +492,13 @@ describe("OAuthInterface", () => {
     it("should reject if any requested scope is invalid", async () => {
       const scope = [Scope.Read, "*"];
       const result = await OAuthInterface.validateScope(user, client, scope);
+      expect(result).toBe(false);
+    });
+
+    it("should reject root wildcard route scopes", async () => {
+      const result = await OAuthInterface.validateScope(user, client, [
+        "/api/*.*",
+      ]);
       expect(result).toBe(false);
     });
   });

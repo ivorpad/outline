@@ -1,5 +1,5 @@
 import { subHours, subMinutes } from "date-fns";
-import Router from "koa-router";
+import Router from "@koa/router";
 import { uniqBy } from "es-toolkit/compat";
 import { TeamPreference } from "@shared/types";
 import { parseDomain } from "@shared/utils/domains";
@@ -19,6 +19,7 @@ import {
 } from "@server/presenters";
 import ValidateSSOAccessTask from "@server/queues/tasks/ValidateSSOAccessTask";
 import type { APIContext } from "@server/types";
+import { AuthenticationType } from "@server/types";
 import { getSessionsInCookie } from "@server/utils/authentication";
 import RateLimiter from "@server/utils/RateLimiter";
 import type * as T from "./schema";
@@ -27,7 +28,7 @@ const router = new Router();
 
 router.post("auth.config", async (ctx: APIContext<T.AuthConfigReq>) => {
   // If self hosted AND there is only one team then that team becomes the
-  // brand for the knowledge base and it's guest signin option is used for the
+  // brand for the knowledge base and its guest sign-in option is used for the
   // root login page.
   if (!env.isCloudHosted) {
     const team = await Team.scope("withAuthenticationProviders").findOne({
@@ -119,7 +120,7 @@ router.post("auth.config", async (ctx: APIContext<T.AuthConfigReq>) => {
 const NON_SSO_SERVICES = ["email", "passkeys"];
 
 router.post("auth.info", auth(), async (ctx: APIContext<T.AuthInfoReq>) => {
-  const { user, service } = ctx.state.auth;
+  const { user, service, type } = ctx.state.auth;
   const sessions = getSessionsInCookie(ctx);
   const signedInTeamIds = Object.keys(sessions);
 
@@ -140,21 +141,16 @@ router.post("auth.info", auth(), async (ctx: APIContext<T.AuthInfoReq>) => {
   // to have access to the workspace they are signed into. This only applies
   // to SSO sessions - email and passkey logins don't have associated
   // UserAuthentication records that need validation.
-  const isOAuthSession = !service || !NON_SSO_SERVICES.includes(service);
+  const requiresSSOValidation = !service || !NON_SSO_SERVICES.includes(service);
   if (
-    isOAuthSession &&
+    requiresSSOValidation &&
     user.lastSignedInAt &&
     user.lastSignedInAt < subHours(new Date(), 1)
   ) {
     await new ValidateSSOAccessTask()
-      .schedule(
-        {
-          userId: user.id,
-        },
-        {
-          jobId: `validate-sso:${user.id}`,
-        }
-      )
+      .schedule({
+        userId: user.id,
+      })
       .catch(() => {
         // Ignore errors from duplicate jobId when a validation is already queued
       });
@@ -168,12 +164,17 @@ router.post("auth.info", auth(), async (ctx: APIContext<T.AuthInfoReq>) => {
       team: presentTeam(team),
       groups: await Promise.all(groups.map(presentGroup)),
       groupUsers: groups.map((group) => presentGroupUser(group.groupUsers[0])),
-      collaborationToken: user.getCollaborationToken(),
+      // The collaboration token is only for the client and should not be issued
+      // to API or OAuth consumers
+      collaborationToken:
+        type === AuthenticationType.APP
+          ? user.getCollaborationToken()
+          : undefined,
       availableTeams: uniqBy([...signedInTeams, ...availableTeams], "id").map(
         (availableTeam) =>
           presentAvailableTeam(
             availableTeam,
-            signedInTeamIds.includes(team.id) ||
+            signedInTeamIds.includes(availableTeam.id) ||
               availableTeam.id === user.teamId
           )
       ),
@@ -196,6 +197,7 @@ router.post(
       userId: user.id,
       data: {
         name: user.name,
+        reason: "manual",
       },
     });
 

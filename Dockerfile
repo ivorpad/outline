@@ -6,13 +6,18 @@ ARG APP_PATH
 WORKDIR $APP_PATH
 
 # ---
-FROM node:24.22.2-bookworm-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9 AS runner
+FROM node:26.13.0-trixie-slim@sha256:5adad64f9a1fca2d51972caa65983634c8a774eb300d72b20f7f2a0f60368072 AS runner
 
 LABEL org.opencontainers.image.source="https://github.com/outline/outline"
 
 ARG APP_PATH
 WORKDIR $APP_PATH
 ENV NODE_ENV=production
+
+# Limit glibc malloc arenas, which default to 8 per CPU. Each arena can hold
+# onto 64MB of virtual memory and freed allocations, which inflates resident
+# memory in multi-threaded Node.js processes for no performance benefit here.
+ENV MALLOC_ARENA_MAX=2
 
 # Create a non-root user compatible with Debian and BusyBox based images
 RUN addgroup --gid 1001 nodejs && \

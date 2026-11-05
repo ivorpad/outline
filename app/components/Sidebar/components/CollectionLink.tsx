@@ -2,15 +2,15 @@ import { observer } from "mobx-react";
 import * as React from "react";
 import { useHistory } from "react-router-dom";
 import { UserPreference } from "@shared/types";
-import { ProsemirrorHelper } from "@shared/utils/ProsemirrorHelper";
+import { ProsemirrorDataHelper } from "@shared/utils/ProsemirrorDataHelper";
 import type Collection from "~/models/Collection";
-import type Document from "~/models/Document";
 import type { RefHandle } from "~/components/EditableTitle";
 import useCurrentUser from "~/hooks/useCurrentUser";
 import { useCollectionMenuAction } from "~/hooks/useCollectionMenuAction";
 import usePolicy from "~/hooks/usePolicy";
 import useStores from "~/hooks/useStores";
 import CollectionMenu from "~/menus/CollectionMenu";
+import * as Scenes from "~/routes/scenes";
 import useBoolean from "~/hooks/useBoolean";
 import { documentEditPath } from "~/utils/routeHelpers";
 import { useDropToChangeCollection } from "../hooks/useDragAndDrop";
@@ -22,7 +22,6 @@ type Props = {
   collection: Collection;
   expanded?: boolean;
   onDisclosureClick: (ev?: React.MouseEvent<HTMLElement>) => void;
-  activeDocument: Document | undefined;
   isDraggingAnyCollection?: boolean;
   depth?: number;
   onClick?: () => void;
@@ -60,11 +59,11 @@ const CollectionLink: React.FC<Props> = ({
   const parentRef = React.useRef<HTMLDivElement>(null);
   const [{ isOver, canDrop }, dropRef] = useDropToChangeCollection(
     collection,
-    handleExpand,
-    parentRef
+    handleExpand
   );
 
   const handlePrefetch = React.useCallback(() => {
+    void Scenes.Collection.preload();
     void collection.fetchDocuments();
   }, [collection]);
 
@@ -79,7 +78,7 @@ const CollectionLink: React.FC<Props> = ({
           collectionId: collection.id,
           title: input,
           fullWidth: user.getPreference(UserPreference.FullWidthDocuments),
-          data: ProsemirrorHelper.getEmptyDocument(),
+          data: ProsemirrorDataHelper.getEmpty(),
         },
         { publish: true }
       );
@@ -117,7 +116,7 @@ const CollectionLink: React.FC<Props> = ({
       onDisclosureClick={onDisclosureClick}
       onExpand={handleExpand}
       canEdit={can.update}
-      labelText={collection.name}
+      labelText={collection.displayName}
       onTitleChange={handleTitleChange}
       editableTitleRef={editableTitleRef}
       contextAction={contextMenuAction}
@@ -129,11 +128,16 @@ const CollectionLink: React.FC<Props> = ({
       dropRef={dropRef}
       isActiveDropTarget={isOver && canDrop}
     >
-      <CollectionLinkChildren
-        collection={collection}
-        expanded={!!expanded}
-        prefetchDocument={documents.prefetchDocument}
-      />
+      {(newChild) => (
+        <CollectionLinkChildren
+          collection={collection}
+          expanded={!!expanded}
+          depth={depth}
+          prefetchDocument={documents.prefetchDocument}
+        >
+          {newChild}
+        </CollectionLinkChildren>
+      )}
     </CollectionRow>
   );
 };

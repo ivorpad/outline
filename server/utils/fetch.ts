@@ -10,8 +10,9 @@ import nodeFetch, {
 } from "node-fetch";
 import { getProxyForUrl } from "proxy-from-env";
 import tunnelAgent, { type TunnelAgent } from "tunnel-agent";
+import { errToString } from "@shared/utils/error";
 import env from "@server/env";
-import { InternalError } from "@server/errors";
+import { InvalidRequestError } from "@server/errors";
 import Logger from "@server/logging/Logger";
 import { capitalize } from "es-toolkit/compat";
 import {
@@ -33,7 +34,7 @@ const DefaultOptions = {
   maxCachedSessions: 500,
 };
 
-export type { RequestInit } from "node-fetch";
+export type { RequestInit, Response } from "node-fetch";
 export { Headers };
 
 /**
@@ -109,18 +110,27 @@ const validateTargetURL = async (
  *
  * @param url The url to fetch
  * @param init The fetch init object
+ * @param init.allowIPAddressList Private IP addresses or CIDR ranges that may
+ *   be requested. Defaults to the ALLOWED_PRIVATE_IP_ADDRESSES environment
+ *   variable; pass an empty list to block every private address.
  * @returns The response
  */
 export default async function fetch(
   url: string,
   init?: RequestInit & {
     allowPrivateIPAddress?: boolean;
+    allowIPAddressList?: string[];
     timeout?: number;
   }
 ): Promise<Response> {
   Logger.silly("http", `Network request to ${url}`, init);
 
-  const { allowPrivateIPAddress, timeout, ...rest } = init || {};
+  const {
+    allowPrivateIPAddress,
+    allowIPAddressList = env.ALLOWED_PRIVATE_IP_ADDRESSES ?? [],
+    timeout,
+    ...rest
+  } = init || {};
 
   // Create AbortController for timeout if specified
   let abortController: AbortController | undefined;
@@ -150,10 +160,7 @@ export default async function fetch(
     if (getProxyForUrl(parsedURL.href)) {
       await validateTargetURL(
         parsedURL,
-        {
-          allowPrivateIPAddress,
-          allowIPAddressList: env.ALLOWED_PRIVATE_IP_ADDRESSES ?? [],
-        },
+        { allowPrivateIPAddress, allowIPAddressList },
         signal
       );
     }
@@ -167,7 +174,11 @@ export default async function fetch(
       ...rest,
       headers,
       signal,
-      agent: buildAgent(url, { signal, allowPrivateIPAddress }),
+      agent: buildAgent(url, {
+        signal,
+        allowPrivateIPAddress,
+        allowIPAddressList,
+      }),
     });
 
     if (!response.ok) {
@@ -181,12 +192,15 @@ export default async function fetch(
 
     return response;
   } catch (err) {
-    if (err.name === "AbortError") {
+    if (err instanceof Error && "name" in err && err.name === "AbortError") {
       throw new Error(`Request timeout after ${timeout}ms`);
     }
-    if (!env.isCloudHosted && err.message?.startsWith("DNS lookup")) {
-      throw InternalError(
-        `${err.message}\n\nTo allow this request, add the IP address or CIDR range to the ALLOWED_PRIVATE_IP_ADDRESSES environment variable.`
+    const message = errToString(err);
+    if (message.startsWith("DNS lookup")) {
+      throw InvalidRequestError(
+        env.isCloudHosted
+          ? message
+          : `${message}\n\nTo allow this request, add the IP address or CIDR range to the ALLOWED_PRIVATE_IP_ADDRESSES environment variable.`
       );
     }
     throw err;
@@ -259,6 +273,7 @@ const buildTunnel = (proxy: UrlWithTunnel, options: RequestInit) => {
  * @param options Options controlling agent behavior.
  * @param options.signal An abort signal used to destroy the agent on cancellation or timeout.
  * @param options.allowPrivateIPAddress Whether to allow requests to private IP addresses.
+ * @param options.allowIPAddressList Private IP addresses or CIDR ranges that may be requested.
  * @returns An http or https agent configured for the URL.
  */
 function buildAgent(
@@ -266,6 +281,7 @@ function buildAgent(
   options: {
     signal?: AbortSignal | null;
     allowPrivateIPAddress?: boolean;
+    allowIPAddressList?: string[];
   } = {}
 ) {
   const agentOptions = { ...DefaultOptions };
@@ -273,11 +289,11 @@ function buildAgent(
   const proxyURL = getProxyForUrl(parsedURL.href);
   let agent: https.Agent | http.Agent | undefined;
 
-  // Add allowIPAddressList from environment configuration
   const filteringOptions = {
     ...agentOptions,
     allowPrivateIPAddress: options.allowPrivateIPAddress,
-    allowIPAddressList: env.ALLOWED_PRIVATE_IP_ADDRESSES ?? [],
+    allowIPAddressList:
+      options.allowIPAddressList ?? env.ALLOWED_PRIVATE_IP_ADDRESSES ?? [],
   };
 
   if (proxyURL) {

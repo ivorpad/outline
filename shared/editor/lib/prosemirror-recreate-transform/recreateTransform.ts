@@ -3,8 +3,8 @@ import { diffWordsWithSpace, diffChars } from "diff";
 import type { Node, Schema } from "prosemirror-model";
 import { Transform } from "prosemirror-transform";
 import type { Operation, ReplaceOperation } from "@shared/utils/rfc6902";
-import { applyPatch, createPatch } from "@shared/utils/rfc6902";
-import { copy } from "./copy";
+import { createPatch } from "@shared/utils/rfc6902";
+import { applyOperation } from "./applyOperation";
 import { getFromPath } from "./getFromPath";
 import { getReplaceStep } from "./getReplaceStep";
 import { removeMarks } from "./removeMarks";
@@ -15,6 +15,12 @@ export interface Options {
   complexSteps?: boolean;
   wordDiffs?: boolean;
   simplifyDiff?: boolean;
+  /**
+   * Maximum allowed product of patch operation count and document node size.
+   * Recreating steps copies and validates the full document once per
+   * operation, so cost grows with this product. When exceeded, init throws.
+   */
+  maxComplexity?: number;
 }
 
 export class RecreateTransform {
@@ -23,6 +29,7 @@ export class RecreateTransform {
   complexSteps: boolean;
   wordDiffs: boolean;
   simplifyDiff: boolean;
+  maxComplexity?: number;
   schema: Schema;
   tr: Transform;
   /* current working document data, may get updated while recalculating node steps */
@@ -44,6 +51,7 @@ export class RecreateTransform {
     this.complexSteps = o.complexSteps; // Whether to return steps other than ReplaceSteps
     this.wordDiffs = o.wordDiffs; // Whether to make text diffs cover entire words
     this.simplifyDiff = o.simplifyDiff;
+    this.maxComplexity = o.maxComplexity;
     this.schema = fromDoc.type.schema;
     this.tr = new Transform(fromDoc);
     this.currentJSON = {};
@@ -58,15 +66,17 @@ export class RecreateTransform {
       // any mapping changes anyway.
       this.currentJSON = removeMarks(this.fromDoc).toJSON();
       this.finalJSON = removeMarks(this.toDoc).toJSON();
-      this.ops = createPatch(this.currentJSON, this.finalJSON);
-      this.recreateChangeContentSteps();
-      this.recreateChangeMarkSteps();
     } else {
       // We don't differentiate between mark changes and other changes.
       this.currentJSON = this.fromDoc.toJSON();
       this.finalJSON = this.toDoc.toJSON();
-      this.ops = createPatch(this.currentJSON, this.finalJSON);
-      this.recreateChangeContentSteps();
+    }
+
+    this.recalculateOps();
+    this.recreateChangeContentSteps();
+
+    if (this.complexSteps) {
+      this.recreateChangeMarkSteps();
     }
 
     if (this.simplifyDiff) {
@@ -74,6 +84,20 @@ export class RecreateTransform {
     }
 
     return this.tr;
+  }
+
+  /** compute json-diff ops from the current to the final document, enforcing maxComplexity */
+  recalculateOps() {
+    this.ops = createPatch(this.currentJSON, this.finalJSON);
+
+    if (this.maxComplexity !== undefined) {
+      const size = Math.max(this.fromDoc.nodeSize, this.toDoc.nodeSize);
+      if (this.ops.length * size > this.maxComplexity) {
+        throw new Error(
+          `Diff exceeds maxComplexity: ${this.ops.length} operations on document of size ${size}`
+        );
+      }
+    }
   }
 
   /** convert json-diff to prosemirror steps */
@@ -86,14 +110,14 @@ export class RecreateTransform {
       ops.push(op);
 
       let toDoc;
-      const afterStepJSON = copy(this.currentJSON); // working document receiving patches
+      let afterStepJSON = this.currentJSON; // working document receiving patches
       const pathParts = op.path.split("/");
 
       // collect operations until we receive a valid document:
       // apply ops-patches until a valid prosemirror document is retrieved,
       // then try to create a transformation step or retry with next operation
       while (!toDoc) {
-        applyPatch(afterStepJSON, [op]);
+        afterStepJSON = applyOperation(afterStepJSON, op);
 
         try {
           toDoc = this.schema.nodeFromJSON(afterStepJSON);
@@ -146,7 +170,7 @@ export class RecreateTransform {
     const toNode = toDoc.nodeAt(start) as Node;
 
     if (!start) {
-      // @note this completly updates all attributes in one step, by completely replacing node
+      // @note this completely updates all attributes in one step, by completely replacing node
       const nodeType = fromNode.type === toNode.type ? null : toNode.type;
       try {
         this.tr.setNodeMarkup(start, nodeType, toNode.attrs, toNode.marks);
@@ -162,7 +186,7 @@ export class RecreateTransform {
       }
       this.currentJSON = removeMarks(this.tr.doc).toJSON();
       // setting the node markup may have invalidated the following ops, so we calculate them again.
-      this.ops = createPatch(this.currentJSON, this.finalJSON);
+      this.recalculateOps();
       return true;
     }
     return false;
@@ -223,10 +247,8 @@ export class RecreateTransform {
     // We find the position number of the first character in the string
     const op1 = { ...op, value: "xx" };
     const op2 = { ...op, value: "yy" };
-    const afterOP1JSON = copy(this.currentJSON);
-    const afterOP2JSON = copy(this.currentJSON);
-    applyPatch(afterOP1JSON, [op1]);
-    applyPatch(afterOP2JSON, [op2]);
+    const afterOP1JSON = applyOperation(this.currentJSON, op1);
+    const afterOP2JSON = applyOperation(this.currentJSON, op2);
     const op1Doc = this.schema.nodeFromJSON(afterOP1JSON);
     const op2Doc = this.schema.nodeFromJSON(afterOP2JSON);
 

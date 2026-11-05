@@ -13,15 +13,14 @@ import Flex from "../Flex";
 import Text from "../Text";
 import Time from "../Time";
 import { UnreadBadge } from "../UnreadBadge";
-import lazyWithRetry from "~/utils/lazyWithRetry";
+import lazyWithRetry from "@shared/utils/lazyWithRetry";
 import { ContextMenu } from "../Menu/ContextMenu";
-import { createActionWithChildren } from "~/actions";
 import {
-  notificationMarkRead,
-  notificationMarkUnread,
-  notificationArchive,
+  notificationMarkReadActionFactory,
+  notificationMarkUnreadActionFactory,
+  notificationArchiveActionFactory,
 } from "~/actions/definitions/notifications";
-import { NotificationSection } from "~/actions/sections";
+import { useMenuAction } from "~/hooks/useMenuAction";
 import AccessRequestActions from "./AccessRequestActions";
 
 const CommentEditor = lazyWithRetry(
@@ -56,18 +55,18 @@ function NotificationListItem({ notification, onNavigate }: Props) {
     onNavigate();
   };
 
-  const menuAction = React.useMemo(
-    () =>
-      createActionWithChildren({
-        name: ({ t }) => t("Notification options"),
-        section: NotificationSection,
-        children: [
-          notificationMarkRead(notification),
-          notificationMarkUnread(notification),
-          notificationArchive(notification),
-        ],
-      }),
+  const actions = React.useMemo(
+    () => [
+      notificationMarkReadActionFactory(notification),
+      notificationMarkUnreadActionFactory(notification),
+      notificationArchiveActionFactory(notification),
+    ],
     [notification]
+  );
+  const menuAction = useMenuAction(actions);
+  const commentData = React.useMemo(
+    () => toJS(notification.comment?.data),
+    [notification.comment?.data]
   );
 
   return (
@@ -81,16 +80,14 @@ function NotificationListItem({ notification, onNavigate }: Props) {
                 {notification.actor?.name ?? t("Unknown")}
               </Text>{" "}
               {notification.eventText(t)}{" "}
-              <Text weight="bold">{notification.subject}</Text>
+              <Text weight="bold">{notification.subject(t)}</Text>
             </Text>
             <Text type="tertiary" size="xsmall">
               <Time dateTime={notification.createdAt} addSuffix />{" "}
-              {collection && <>&middot; {collection.name}</>}
+              {collection && <>&middot; {collection.displayName}</>}
             </Text>
-            {notification.comment && (
-              <StyledCommentEditor
-                defaultValue={toJS(notification.comment.data)}
-              />
+            {commentData && (
+              <StyledCommentEditor value={commentData} readOnly />
             )}
             {isAccessRequestPending && (
               <AccessRequestActions notification={notification} />

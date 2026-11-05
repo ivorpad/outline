@@ -1,5 +1,5 @@
-import { filter, orderBy } from "es-toolkit/compat";
-import { action, computed } from "mobx";
+import { orderBy } from "es-toolkit/compat";
+import { action, computed, makeObservable, override } from "mobx";
 import { invariant } from "mobx-utils";
 import naturalSort from "@shared/utils/naturalSort";
 import Template from "~/models/Template";
@@ -10,16 +10,27 @@ import Store from "./base/Store";
 export default class TemplatesStore extends Store<Template> {
   constructor(rootStore: RootStore) {
     super(rootStore, Template);
+    makeObservable(this);
+  }
+
+  /**
+   * Templates that are published, and so available to insert into documents.
+   */
+  @computed
+  get published(): Template[] {
+    return this.orderedData.filter(
+      (template) => template.isActive && !template.isDraft
+    );
   }
 
   @computed
   get alphabetical(): Template[] {
-    return naturalSort(Array.from(this.data.values()), "title");
+    return naturalSort(this.published, "title");
   }
 
   @computed
   get all(): Template[] {
-    return filter(this.orderedData, (d) => !d.deletedAt);
+    return this.orderedData.filter((d) => !d.deletedAt);
   }
 
   @action
@@ -63,10 +74,7 @@ export default class TemplatesStore extends Store<Template> {
   };
 
   get(id: string): Template | undefined {
-    return id
-      ? (this.data.get(id) ??
-          this.orderedData.find((doc) => id.endsWith(doc.urlId)))
-      : undefined;
+    return this.getByIdOrUrlId(id);
   }
 
   @computed
@@ -74,7 +82,7 @@ export default class TemplatesStore extends Store<Template> {
     return this.rootStore.ui.getActiveModels(Template)?.[0];
   }
 
-  @computed
+  @override
   get orderedData(): Template[] {
     return orderBy(Array.from(this.data.values()), "createdAt", "desc");
   }

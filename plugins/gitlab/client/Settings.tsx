@@ -18,6 +18,7 @@ import Time from "~/components/Time";
 import env from "~/env";
 import useQuery from "~/hooks/useQuery";
 import useStores from "~/hooks/useStores";
+import { isTruthyQueryValue } from "~/utils/urls";
 import GitLabIcon from "./components/Icon";
 import { GitLabConnectButton } from "./components/GitLabButton";
 
@@ -30,7 +31,7 @@ function GitLab() {
   const appName = env.APP_NAME;
 
   React.useEffect(() => {
-    void integrations.fetchAll({
+    void integrations.fetchAllIfNeeded({
       service: IntegrationService.GitLab,
       withRelations: true,
     });
@@ -59,10 +60,10 @@ function GitLab() {
           )}
         </Notice>
       )}
-      {installRequest === "true" && (
+      {isTruthyQueryValue(installRequest) && (
         <Notice>
           <Trans>
-            The owner of GitLab account has been requested to install the
+            The owner of the GitLab account has been requested to install the
             application. Once approved, the connection will be completed.
           </Trans>
         </Notice>
@@ -70,8 +71,7 @@ function GitLab() {
       <Text as="p">
         <Trans>
           Enable previews of GitLab issues and merge requests in documents by
-          connecting a GitLab organization or specific repositories to {appName}
-          .
+          connecting a GitLab group or specific projects to {{ appName }}.
         </Trans>
       </Text>
 

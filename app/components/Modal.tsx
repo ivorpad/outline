@@ -4,8 +4,8 @@ import { CloseIcon, BackIcon } from "outline-icons";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import styled from "styled-components";
-import breakpoint from "styled-components-breakpoint";
-import { depths, s } from "@shared/styles";
+import { breakpoint } from "@shared/styles/breakpoint";
+import { depths, s, borderRadius } from "@shared/styles";
 import Flex from "~/components/Flex";
 import NudeButton from "~/components/NudeButton";
 import Scrollable from "~/components/Scrollable";
@@ -86,7 +86,7 @@ const Modal: React.FC<Props> = ({
               <Centered
                 onClick={(ev) => ev.stopPropagation()}
                 // maxHeight needed for proper overflow behavior in Safari
-                style={{ maxHeight: "65vh" }}
+                style={{ maxHeight: height ? maxModalHeight(height) : "65vh" }}
                 column
                 reverse
               >
@@ -103,7 +103,7 @@ const Modal: React.FC<Props> = ({
                     <Text size="large">{resolvedTitle}</Text>
                   </Dialog.Title>
                   <Tooltip content={t("Close")} shortcut="Esc">
-                    <NudeButton onClick={onClose}>
+                    <NudeButton onClick={onClose} aria-label={t("Close")}>
                       <CloseIcon />
                     </NudeButton>
                   </Tooltip>
@@ -116,6 +116,10 @@ const Modal: React.FC<Props> = ({
     </Dialog.Root>
   );
 };
+
+// Limit the requested height so that the modal stays within the viewport.
+const maxModalHeight = (value: number | string) =>
+  `min(${typeof value === "number" ? `${value}px` : value}, 90vh)`;
 
 const StyledOverlay = styled(Dialog.Overlay)`
   position: fixed;
@@ -225,6 +229,17 @@ const Header = styled(Flex)`
   font-weight: 600;
   padding: 24px 24px 12px;
   flex-shrink: 0;
+  gap: 8px;
+
+  // Allows a long title to wrap or truncate instead of pushing out the close
+  // button
+  > :first-child {
+    min-width: 0;
+  }
+
+  > :last-child {
+    flex-shrink: 0;
+  }
 `;
 
 const Wrapper = styled.div<{
@@ -233,18 +248,26 @@ const Wrapper = styled.div<{
 }>`
   animation: ${fadeAndScaleIn} 250ms ease;
 
-  margin: 25vh auto auto auto;
+  // Move taller modals up so that they remain within the viewport.
+  margin-top: ${(props) =>
+    props.$height
+      ? `min(25vh, calc(95vh - ${maxModalHeight(props.$height)}))`
+      : "25vh"};
+  margin-right: auto;
+  margin-bottom: auto;
+  margin-left: auto;
   width: 75vw;
   min-width: 350px;
   max-width: ${(props) => props.$width || "450px"};
-  max-height: ${(props) => props.$height || "70vh"};
+  max-height: ${(props) =>
+    props.$height ? maxModalHeight(props.$height) : "70vh"};
   z-index: ${depths.modal};
   display: flex;
   justify-content: center;
   align-items: flex-start;
   background: ${s("modalBackground")};
   box-shadow: ${s("modalShadow")};
-  border-radius: 8px;
+  ${borderRadius(10)}
   outline: none;
 
   ${NudeButton} {

@@ -3,9 +3,14 @@ import { observer } from "mobx-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import styled from "styled-components";
+import { colorPalette } from "@shared/constants";
+import { errToString } from "@shared/utils/error";
+import { GroupPermissionHelper } from "@shared/utils/GroupPermissionHelper";
 import Group from "~/models/Group";
 import type User from "~/models/User";
 import Invite from "~/scenes/Invite";
+import { performBatch } from "~/actions/definitions/common";
 import { Avatar, AvatarSize } from "~/components/Avatar";
 import Badge from "~/components/Badge";
 import Button from "~/components/Button";
@@ -14,7 +19,9 @@ import ConfirmationDialog from "~/components/ConfirmationDialog";
 import DelayedMount from "~/components/DelayedMount";
 import Empty from "~/components/Empty";
 import Flex from "~/components/Flex";
+import { ResolvedGroupIcon } from "~/components/Icons/GroupIcon";
 import Input from "~/components/Input";
+import { createLazyComponent } from "~/components/LazyLoad";
 import PlaceholderList from "~/components/List/Placeholder";
 import PaginatedList from "~/components/PaginatedList";
 import { ListItem } from "~/components/Sharing/components/ListItem";
@@ -34,6 +41,8 @@ import Switch from "~/components/Switch";
 import history from "~/utils/history";
 import { settingsPath } from "~/utils/routeHelpers";
 
+const IconPicker = createLazyComponent(() => import("~/components/IconPicker"));
+
 type Props = {
   group: Group;
   onSubmit: () => void;
@@ -44,7 +53,17 @@ export function CreateGroupDialog() {
   const { t } = useTranslation();
   const [name, setName] = React.useState<string | undefined>();
   const [description, setDescription] = React.useState<string | undefined>();
+  const [icon, setIcon] = React.useState<string | null>(null);
+  const [color, setColor] = React.useState<string | null>(null);
   const [isSaving, setIsSaving] = React.useState(false);
+
+  const handleIconChange = React.useCallback(
+    (newIcon: string | null, newColor: string | null) => {
+      setIcon(newIcon);
+      setColor(newColor);
+    },
+    []
+  );
 
   const handleSubmit = React.useCallback(
     async (ev: React.SyntheticEvent) => {
@@ -55,6 +74,8 @@ export function CreateGroupDialog() {
         {
           name,
           description,
+          icon,
+          color,
         },
         groups
       );
@@ -64,12 +85,12 @@ export function CreateGroupDialog() {
         dialogs.closeAllModals();
         history.push(settingsPath("groups", group.id, "members"));
       } catch (err) {
-        toast.error(err.message);
+        toast.error(errToString(err));
       } finally {
         setIsSaving(false);
       }
     },
-    [dialogs, groups, name, description]
+    [dialogs, groups, name, description, icon, color]
   );
 
   return (
@@ -84,10 +105,18 @@ export function CreateGroupDialog() {
       <Flex column>
         <Input
           type="text"
-          label="Name"
+          label={t("Name")}
           onChange={(e) => setName(e.target.value)}
           value={name}
           maxLength={GroupValidation.maxNameLength}
+          prefix={
+            <GroupIconPicker
+              icon={icon}
+              color={color}
+              initial={(name ?? "").charAt(0).toUpperCase()}
+              onChange={handleIconChange}
+            />
+          }
           showCharacterCount
           required
           autoFocus
@@ -95,7 +124,7 @@ export function CreateGroupDialog() {
         />
         <Input
           type="textarea"
-          label="Description"
+          label={t("Description")}
           placeholder={t("Optional")}
           onChange={(e) => setDescription(e.target.value)}
           value={description || ""}
@@ -118,6 +147,8 @@ export function EditGroupDialog({ group, onSubmit }: Props) {
   const { t } = useTranslation();
   const [name, setName] = React.useState(group.name);
   const [description, setDescription] = React.useState(group.description || "");
+  const [icon, setIcon] = React.useState(group.icon);
+  const [color, setColor] = React.useState(group.color);
   const [disableMentions, setDisableMentions] = React.useState(
     group.disableMentions || false
   );
@@ -131,16 +162,26 @@ export function EditGroupDialog({ group, onSubmit }: Props) {
         await group.save({
           name,
           description,
+          icon,
+          color,
           disableMentions,
         });
         onSubmit();
       } catch (err) {
-        toast.error(err.message);
+        toast.error(errToString(err));
       } finally {
         setIsSaving(false);
       }
     },
-    [group, onSubmit, name, description, disableMentions]
+    [group, onSubmit, name, description, icon, color, disableMentions]
+  );
+
+  const handleIconChange = React.useCallback(
+    (newIcon: string | null, newColor: string | null) => {
+      setIcon(newIcon);
+      setColor(newColor);
+    },
+    []
   );
 
   const handleNameChange = React.useCallback(
@@ -156,12 +197,12 @@ export function EditGroupDialog({ group, onSubmit }: Props) {
         {group.isExternallyManaged ? (
           <Trans>
             This group is managed by an external authentication provider. The
-            name is synced automatically and cannot be changed.
+            name and description are synced automatically and cannot be changed.
           </Trans>
         ) : (
           <Trans>
             You can edit the name of this group at any time, however doing so
-            too often might confuse your team mates.
+            too often might confuse your teammates.
           </Trans>
         )}
       </Text>
@@ -172,6 +213,14 @@ export function EditGroupDialog({ group, onSubmit }: Props) {
           onChange={handleNameChange}
           value={name}
           maxLength={GroupValidation.maxNameLength}
+          prefix={
+            <GroupIconPicker
+              icon={icon}
+              color={color}
+              initial={name.charAt(0).toUpperCase()}
+              onChange={handleIconChange}
+            />
+          }
           showCharacterCount
           disabled={group.isExternallyManaged}
           required
@@ -185,6 +234,7 @@ export function EditGroupDialog({ group, onSubmit }: Props) {
           onChange={(e) => setDescription(e.target.value)}
           value={description}
           maxLength={GroupValidation.maxDescriptionLength}
+          disabled={group.isExternallyManaged}
           flex
         />
         <Switch
@@ -205,11 +255,17 @@ export function EditGroupDialog({ group, onSubmit }: Props) {
   );
 }
 
-export function DeleteGroupDialog({ group, onSubmit }: Props) {
+export function DeleteGroupDialog({
+  groups,
+  onSubmit,
+}: {
+  groups: Group[];
+  onSubmit: () => void;
+}) {
   const { t } = useTranslation();
 
   const handleSubmit = async () => {
-    await group.delete();
+    await performBatch(groups, (group) => group.delete());
     onSubmit();
   };
 
@@ -220,15 +276,22 @@ export function DeleteGroupDialog({ group, onSubmit }: Props) {
       savingText={`${t("Deleting")}…`}
       danger
     >
-      <Trans
-        defaults="Are you sure about that? Deleting the <em>{{groupName}}</em> group will cause its members to lose access to collections and documents that it is associated with."
-        values={{
-          groupName: group.name,
-        }}
-        components={{
-          em: <strong />,
-        }}
-      />
+      {groups.length === 1 ? (
+        <Trans
+          defaults="Are you sure about that? Deleting the <em>{{groupName}}</em> group will cause its members to lose access to collections and documents that it is associated with."
+          values={{
+            groupName: groups[0].name,
+          }}
+          components={{
+            em: <strong />,
+          }}
+        />
+      ) : (
+        t(
+          "Are you sure about that? Deleting {{ count }} group will cause their members to lose access to collections and documents that they are associated with.",
+          { count: groups.length }
+        )
+      )}
     </ConfirmationDialog>
   );
 }
@@ -374,11 +437,11 @@ const GroupMemberListItem = observer(function ({
     () =>
       [
         {
-          label: t("Group admin"),
+          label: GroupPermissionHelper.displayName(GroupPermission.Admin, t),
           value: GroupPermission.Admin,
         },
         {
-          label: t("Member"),
+          label: GroupPermissionHelper.displayName(GroupPermission.Member, t),
           value: GroupPermission.Member,
         },
         {
@@ -434,7 +497,7 @@ const GroupMemberListItem = observer(function ({
                       });
                     }
                   } catch (err) {
-                    toast.error(err.message);
+                    toast.error(errToString(err));
                     return false;
                   }
                   return true;
@@ -449,3 +512,39 @@ const GroupMemberListItem = observer(function ({
     />
   );
 });
+
+type GroupIconPickerProps = {
+  icon: string | null;
+  color: string | null;
+  initial: string;
+  onChange: (icon: string | null, color: string | null) => void;
+};
+
+function GroupIconPicker({
+  icon,
+  color,
+  initial,
+  onChange,
+}: GroupIconPickerProps) {
+  const fallback = <ResolvedGroupIcon group={{ icon, color, initial }} />;
+
+  return (
+    <React.Suspense fallback={fallback}>
+      <StyledIconPicker
+        icon={icon}
+        color={color ?? colorPalette[0]}
+        initial={initial}
+        popoverPosition="right"
+        onChange={onChange}
+        allowDelete
+      >
+        {icon ? undefined : fallback}
+      </StyledIconPicker>
+    </React.Suspense>
+  );
+}
+
+const StyledIconPicker = styled(IconPicker.Component)`
+  margin-left: 4px;
+  margin-right: 4px;
+`;

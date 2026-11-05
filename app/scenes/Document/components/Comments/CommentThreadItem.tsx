@@ -7,7 +7,7 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import styled, { css } from "styled-components";
-import breakpoint from "styled-components-breakpoint";
+import { breakpoint } from "@shared/styles/breakpoint";
 import EventBoundary from "@shared/components/EventBoundary";
 import { s, hover } from "@shared/styles";
 import type { ProsemirrorData } from "@shared/types";
@@ -20,14 +20,15 @@ import Flex from "~/components/Flex";
 import NudeButton from "~/components/NudeButton";
 import ReactionList from "~/components/Reactions/ReactionList";
 import ReactionPicker from "~/components/Reactions/ReactionPicker";
+import { ResizingHeightContainer } from "~/components/ResizingHeightContainer";
 import Text from "~/components/Text";
 import Time from "~/components/Time";
 import Tooltip from "~/components/Tooltip";
-import { resolveCommentFactory } from "~/actions/definitions/comments";
+import { resolveCommentActionFactory } from "~/actions/definitions/comments";
 import useBoolean from "~/hooks/useBoolean";
 import useCurrentUser from "~/hooks/useCurrentUser";
 import CommentMenu from "~/menus/CommentMenu";
-import lazyWithRetry from "~/utils/lazyWithRetry";
+import lazyWithRetry from "@shared/utils/lazyWithRetry";
 
 const CommentEditor = lazyWithRetry(() => import("./CommentEditor"));
 import { HighlightedText } from "./HighlightText";
@@ -251,25 +252,27 @@ function CommentThreadItem({
               </ButtonSmall>
             </Flex>
           )}
-          {!!comment.reactions.length && (
-            <ReactionListContainer gap={6} align="center">
-              <ReactionList
-                model={comment}
-                onAddReaction={handleAddReaction}
-                onRemoveReaction={handleRemoveReaction}
-                picker={
-                  !comment.isResolved ? (
-                    <Action
-                      as={ReactionPicker}
-                      onSelect={handleAddReaction}
-                      size={28}
-                      $rounded
-                    />
-                  ) : undefined
-                }
-              />
-            </ReactionListContainer>
-          )}
+          <ResizingHeightContainer hideOverflow>
+            {!!comment.reactions.length && (
+              <ReactionListContainer gap={6} align="center">
+                <ReactionList
+                  model={comment}
+                  onAddReaction={handleAddReaction}
+                  onRemoveReaction={handleRemoveReaction}
+                  picker={
+                    !comment.isResolved ? (
+                      <Action
+                        as={ReactionPicker}
+                        onSelect={handleAddReaction}
+                        size={28}
+                        $rounded
+                      />
+                    ) : undefined
+                  }
+                />
+              </ReactionListContainer>
+            )}
+          </ResizingHeightContainer>
         </Body>
         <EventBoundary>
           {!isEditing && (
@@ -314,10 +317,10 @@ const ResolveButton = ({
   const { t } = useTranslation();
 
   return (
-    <Tooltip content={t("Mark as resolved")} placement="top">
+    <Tooltip content={t("Mark as resolved")}>
       <Action
         as={NudeButton}
-        action={resolveCommentFactory({
+        action={resolveCommentActionFactory({
           comment,
           onResolve: () => onUpdate({ resolved: true }),
         })}
@@ -400,7 +403,7 @@ const Actions = styled(Flex)`
 `;
 
 const ReactionListContainer = styled(Flex)`
-  margin-top: 6px;
+  padding-top: 6px;
 `;
 
 const Meta = styled(Text)`

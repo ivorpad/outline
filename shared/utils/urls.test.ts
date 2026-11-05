@@ -69,6 +69,49 @@ describe("isUrl", () => {
   });
 });
 
+describe("isPrivateUseSchemeUrl", () => {
+  it("should return true for private-use schemes", () => {
+    expect(
+      urlsUtils.isPrivateUseSchemeUrl("com.example.app:/oauth2redirect")
+    ).toBe(true);
+    expect(urlsUtils.isPrivateUseSchemeUrl("myapp://callback")).toBe(true);
+    expect(urlsUtils.isPrivateUseSchemeUrl("myapp://callback?x=1")).toBe(true);
+    expect(urlsUtils.isPrivateUseSchemeUrl("MyApp://callback")).toBe(true);
+    expect(urlsUtils.isPrivateUseSchemeUrl("myapp:a")).toBe(true);
+    expect(urlsUtils.isPrivateUseSchemeUrl("myapp:/a")).toBe(true);
+  });
+
+  it("should return false for web schemes", () => {
+    expect(urlsUtils.isPrivateUseSchemeUrl("http://example.com")).toBe(false);
+    expect(urlsUtils.isPrivateUseSchemeUrl("https://example.com")).toBe(false);
+    expect(urlsUtils.isPrivateUseSchemeUrl("ftp://example.com")).toBe(false);
+    expect(urlsUtils.isPrivateUseSchemeUrl("wss://example.com")).toBe(false);
+  });
+
+  it("should return false for schemes that can execute or embed content", () => {
+    expect(urlsUtils.isPrivateUseSchemeUrl("javascript:alert(1)")).toBe(false);
+    expect(urlsUtils.isPrivateUseSchemeUrl("JavaScript:alert(1)")).toBe(false);
+    expect(urlsUtils.isPrivateUseSchemeUrl("data:text/html,hi")).toBe(false);
+    expect(urlsUtils.isPrivateUseSchemeUrl("vbscript:msgbox")).toBe(false);
+    expect(urlsUtils.isPrivateUseSchemeUrl("file:///etc/passwd")).toBe(false);
+    expect(urlsUtils.isPrivateUseSchemeUrl("blob:https://example.com/x")).toBe(
+      false
+    );
+    expect(urlsUtils.isPrivateUseSchemeUrl("about:blank")).toBe(false);
+  });
+
+  it("should return false for malformed or empty values", () => {
+    expect(urlsUtils.isPrivateUseSchemeUrl("")).toBe(false);
+    expect(urlsUtils.isPrivateUseSchemeUrl("myapp:")).toBe(false);
+    expect(urlsUtils.isPrivateUseSchemeUrl("myapp:/")).toBe(false);
+    expect(urlsUtils.isPrivateUseSchemeUrl("myapp://")).toBe(false);
+    expect(urlsUtils.isPrivateUseSchemeUrl("callback")).toBe(false);
+    expect(urlsUtils.isPrivateUseSchemeUrl("/relative/path")).toBe(false);
+    expect(urlsUtils.isPrivateUseSchemeUrl(" myapp://callback")).toBe(false);
+    expect(urlsUtils.isPrivateUseSchemeUrl("myapp://call back")).toBe(false);
+  });
+});
+
 describe("isBase64Url", () => {
   it("should return false for invalid url", () => {
     expect(urlsUtils.isBase64Url("")).toBe(false);
@@ -117,6 +160,62 @@ describe("isInternalUrl", () => {
   });
 });
 
+describe("addMissingUrlPort", () => {
+  const url = env.URL;
+
+  beforeEach(() => {
+    env.URL = "https://example.com:3000";
+  });
+
+  afterEach(() => {
+    env.URL = url;
+  });
+
+  it("should add the port to a url without one", () => {
+    expect(urlsUtils.addMissingUrlPort("https://example.com/drafts")).toBe(
+      "https://example.com:3000/drafts"
+    );
+  });
+
+  it("should not change a url that already has a port", () => {
+    expect(urlsUtils.addMissingUrlPort("https://example.com:4000/drafts")).toBe(
+      "https://example.com:4000/drafts"
+    );
+  });
+
+  it("should not change a relative url", () => {
+    expect(urlsUtils.addMissingUrlPort("/drafts")).toBe("/drafts");
+  });
+
+  it("should not change a url when no port is configured", () => {
+    env.URL = "https://example.com";
+    expect(urlsUtils.addMissingUrlPort("https://example.com/drafts")).toBe(
+      "https://example.com/drafts"
+    );
+  });
+
+  it("should not add the default https port", () => {
+    env.URL = "https://example.com:443";
+    expect(urlsUtils.addMissingUrlPort("https://example.com/drafts")).toBe(
+      "https://example.com/drafts"
+    );
+  });
+
+  it("should not add the default http port", () => {
+    env.URL = "http://example.com:80";
+    expect(urlsUtils.addMissingUrlPort("http://example.com/drafts")).toBe(
+      "http://example.com/drafts"
+    );
+  });
+
+  it("should add a port that is not the default for the protocol", () => {
+    env.URL = "http://example.com:443";
+    expect(urlsUtils.addMissingUrlPort("http://example.com/drafts")).toBe(
+      "http://example.com:443/drafts"
+    );
+  });
+});
+
 describe("isExternalUrl", () => {
   it("should return false if empty url", () => {
     expect(urlsUtils.isExternalUrl("")).toBe(false);
@@ -136,6 +235,15 @@ describe("sanitizeUrl", () => {
 
   it("should append https:// to non-special urls", () => {
     expect(urlsUtils.sanitizeUrl("www.google.com")).toEqual(
+      "https://www.google.com"
+    );
+  });
+
+  it("should trim surrounding whitespace rather than append a scheme", () => {
+    expect(urlsUtils.sanitizeUrl("https://www.google.com\n")).toEqual(
+      "https://www.google.com"
+    );
+    expect(urlsUtils.sanitizeUrl(" https://www.google.com ")).toEqual(
       "https://www.google.com"
     );
   });
@@ -319,7 +427,7 @@ describe("#urlRegex", () => {
 
   it("should return corresponding regex otherwise", () => {
     const regex = urlRegex("https://docs.google.com");
-    expect(regex?.source).toBe(/https:\/\/docs\.google\.com/.source);
+    expect(regex?.source).toBe(/^https:\/\/docs\.google\.com/.source);
     expect(regex?.test("https://docs.google.com")).toBe(true);
     expect(regex?.test("https://docs.google.com/")).toBe(true);
     expect(regex?.test("https://docs.google.com/d/123")).toBe(true);
@@ -327,5 +435,118 @@ describe("#urlRegex", () => {
     expect(regex?.test("http://docs.google.com")).toBe(false);
     expect(regex?.test("http://docs.google.com/")).toBe(false);
     expect(regex?.test("http://docs.google.com/d/123")).toBe(false);
+    expect(regex?.test("javascript:alert(1)//https://docs.google.com")).toBe(
+      false
+    );
+  });
+});
+
+describe("#getHostname", () => {
+  it("should return the hostname", () => {
+    expect(urlsUtils.getHostname("https://Example.com:8080/a?b=c")).toBe(
+      "example.com"
+    );
+  });
+
+  it("should return internationalized hostnames as punycode", () => {
+    expect(urlsUtils.getHostname("https://аpple.com/client.json")).toBe(
+      "xn--pple-43d.com"
+    );
+  });
+
+  it("should keep brackets on IPv6 hostnames", () => {
+    expect(urlsUtils.getHostname("http://[::1]:3000/callback")).toBe("[::1]");
+  });
+
+  it("should return undefined for unparseable input", () => {
+    expect(urlsUtils.getHostname("not a url")).toBeUndefined();
+    expect(urlsUtils.getHostname("")).toBeUndefined();
+    expect(urlsUtils.getHostname(undefined)).toBeUndefined();
+  });
+});
+
+describe("#removeUrlFragment", () => {
+  it("should remove a hash fragment", () => {
+    expect(
+      urlsUtils.removeUrlFragment("https://example.com/doc/abc#h-my-heading")
+    ).toBe("https://example.com/doc/abc");
+  });
+
+  it("should leave urls without a hash untouched", () => {
+    expect(urlsUtils.removeUrlFragment("https://example.com/doc/abc")).toBe(
+      "https://example.com/doc/abc"
+    );
+  });
+
+  it("should preserve query strings", () => {
+    expect(
+      urlsUtils.removeUrlFragment("https://example.com/doc/abc?foo=bar#heading")
+    ).toBe("https://example.com/doc/abc?foo=bar");
+  });
+
+  it("should fall back to string stripping for non-parseable input", () => {
+    expect(urlsUtils.removeUrlFragment("/doc/abc#heading")).toBe("/doc/abc");
+  });
+});
+
+describe("#removeUrlPathSuffix", () => {
+  it("should remove a trailing path suffix", () => {
+    expect(
+      urlsUtils.removeUrlPathSuffix(
+        "https://example.com/doc/my-doc-abc123/edit",
+        "/edit"
+      )
+    ).toBe("https://example.com/doc/my-doc-abc123");
+  });
+
+  it("should not corrupt a hostname containing the suffix", () => {
+    expect(
+      urlsUtils.removeUrlPathSuffix(
+        "https://editing.example.com/doc/my-doc-abc123",
+        "/edit"
+      )
+    ).toBe("https://editing.example.com/doc/my-doc-abc123");
+  });
+
+  it("should only strip the trailing suffix, not a match in the hostname", () => {
+    expect(
+      urlsUtils.removeUrlPathSuffix(
+        "https://editing.example.com/doc/my-doc-abc123/edit",
+        "/edit"
+      )
+    ).toBe("https://editing.example.com/doc/my-doc-abc123");
+  });
+
+  it("should leave urls without the suffix untouched", () => {
+    expect(
+      urlsUtils.removeUrlPathSuffix(
+        "https://example.com/doc/my-doc-abc123",
+        "/edit"
+      )
+    ).toBe("https://example.com/doc/my-doc-abc123");
+  });
+
+  it("should not strip the suffix when it is not the final path segment", () => {
+    expect(
+      urlsUtils.removeUrlPathSuffix(
+        "https://example.com/edit/something",
+        "/edit"
+      )
+    ).toBe("https://example.com/edit/something");
+  });
+
+  it("should preserve query strings", () => {
+    expect(
+      urlsUtils.removeUrlPathSuffix(
+        "https://example.com/doc/abc/edit?foo=bar",
+        "/edit"
+      )
+    ).toBe("https://example.com/doc/abc?foo=bar");
+  });
+
+  it("should fall back to string stripping for non-parseable input", () => {
+    expect(
+      urlsUtils.removeUrlPathSuffix("/doc/my-doc-abc123/edit", "/edit")
+    ).toBe("/doc/my-doc-abc123");
   });
 });

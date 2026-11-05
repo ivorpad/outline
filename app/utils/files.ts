@@ -1,4 +1,5 @@
 import invariant from "invariant";
+import type { Accept } from "react-dropzone";
 import { AttachmentPreset } from "@shared/types";
 import { dataUrlToBlob } from "@shared/utils/files";
 import { client } from "./ApiClient";
@@ -62,19 +63,7 @@ export const uploadFile = async (
   invariant(response, "Response should be available");
   const data = response.data;
   const attachment = data.attachment;
-  const formData = new FormData();
-
-  for (const key in data.form) {
-    formData.append(key, data.form[key]);
-  }
-
-  // @ts-expect-error ts-migrate(2339) FIXME: Property 'blob' does not exist on type 'File | Blo... Remove this comment to see the full error message
-  if (file.blob) {
-    // @ts-expect-error ts-migrate(2339) FIXME: Property 'file' does not exist on type 'File | Blo... Remove this comment to see the full error message
-    formData.append("file", file.file);
-  } else {
-    formData.append("file", file);
-  }
+  const usePut = data.mode === "put";
 
   // Using XMLHttpRequest instead of fetch because fetch doesn't support progress
   const xhr = new XMLHttpRequest();
@@ -92,8 +81,6 @@ export const uploadFile = async (
         size: file.size,
       };
 
-      // Status 0 means the request never reached the server (network drop,
-      // CORS, abort) — log as a warning rather than an unhelpful "Error: 0".
       if (xhr.status === 0) {
         Logger.warn("File upload failed before response", extra);
         return;
@@ -109,19 +96,41 @@ export const uploadFile = async (
       resolve(xhr.readyState === 4 && xhr.status >= 200 && xhr.status < 400);
     });
 
-    // Do not send credentials if uploading to a different origin, as the combination
-    // of CORS and cookies will cause preflight request failure. However S3-like storage
-    // on the same host can work with credentials.
-    if (data.uploadUrl.startsWith("/")) {
-      xhr.withCredentials = true;
+    if (usePut) {
+      xhr.open("PUT", data.url, true);
+      if (data.headers) {
+        for (const [key, value] of Object.entries(
+          data.headers as Record<string, string>
+        )) {
+          if (isForbiddenRequestHeader(key)) {
+            continue;
+          }
+          xhr.setRequestHeader(key, value);
+        }
+      }
+      xhr.send(file);
     } else {
-      const parsed = new URL(data.uploadUrl);
-      const requiresPreflightRequest = parsed.origin !== window.location.origin;
-      xhr.withCredentials = !requiresPreflightRequest;
-    }
+      const formData = new FormData();
+      for (const key in data.form) {
+        formData.append(key, data.form[key]);
+      }
+      formData.append("file", file);
 
-    xhr.open("POST", data.uploadUrl, true);
-    xhr.send(formData);
+      // Do not send credentials if uploading to a different origin, as the
+      // combination of CORS and cookies will cause preflight request failure.
+      // However S3-like storage on the same host can work with credentials.
+      if (data.uploadUrl.startsWith("/")) {
+        xhr.withCredentials = true;
+      } else {
+        const parsed = new URL(data.uploadUrl);
+        const requiresPreflightRequest =
+          parsed.origin !== window.location.origin;
+        xhr.withCredentials = !requiresPreflightRequest;
+      }
+
+      xhr.open("POST", data.uploadUrl, true);
+      xhr.send(formData);
+    }
   });
 
   if (!success) {
@@ -133,11 +142,87 @@ export const uploadFile = async (
 
 export { dataUrlToBlob };
 
+/**
+ * Converts a list of mime types and file extensions to the accept map used by
+ * react-dropzone. The map is flattened into a single accept attribute, so the
+ * extensions are grouped under the first mime type.
+ *
+ * @param types the mime types and file extensions, such as "image/png" or ".png".
+ * @returns the accept map.
+ */
+export const toDropzoneAccept = (types: readonly string[]): Accept => {
+  const mimeTypes = types.filter((type) => !type.startsWith("."));
+  const extensions = types.filter((type) => type.startsWith("."));
+
+  return Object.fromEntries(
+    mimeTypes.map((mimeType, index) => [
+      mimeType,
+      index === 0 ? extensions : [],
+    ])
+  );
+};
+
+/**
+ * Header names the browser controls itself - it silently ignores an attempt to
+ * set one and logs an error to the console.
+ *
+ * @see https://fetch.spec.whatwg.org/#forbidden-request-header
+ */
+const forbiddenRequestHeaders = [
+  "accept-charset",
+  "accept-encoding",
+  "access-control-request-headers",
+  "access-control-request-method",
+  "connection",
+  "content-length",
+  "cookie",
+  "cookie2",
+  "date",
+  "dnt",
+  "expect",
+  "host",
+  "keep-alive",
+  "origin",
+  "referer",
+  "set-cookie",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+  "via",
+];
+
+const forbiddenRequestHeaderPrefixes = ["proxy-", "sec-"];
+
+/**
+ * Checks whether the browser refuses to let a header be set on a request.
+ *
+ * @param name the header name to check.
+ * @returns true if the header cannot be set.
+ */
+const isForbiddenRequestHeader = (name: string): boolean => {
+  const lowercased = name.toLowerCase();
+  return (
+    forbiddenRequestHeaders.includes(lowercased) ||
+    forbiddenRequestHeaderPrefixes.some((prefix) =>
+      lowercased.startsWith(prefix)
+    )
+  );
+};
+
 const CHAR_FORWARD_SLASH = 47; /* / */
 const CHAR_DOT = 46; /* . */
 
 // Based on the NodeJS Library https://github.com/nodejs/node/blob/896b75a4da58a7283d551c4595e0aa454baca3e0/lib/path.js
 // Copyright Joyent, Inc. and other Node contributors.
+/**
+ * Returns the extension of the path, from the last occurrence of the "."
+ * character to the end of the string in the last portion of the path.
+ *
+ * @param path the path to evaluate.
+ * @returns the extension including the leading ".", or an empty string.
+ * @throws TypeError if path is not a string.
+ */
 export const extname = (path: string) => {
   if (typeof path !== "string") {
     throw new TypeError(

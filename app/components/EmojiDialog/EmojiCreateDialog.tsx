@@ -8,7 +8,7 @@ import Input, { LabelText } from "~/components/Input";
 import Text from "~/components/Text";
 import useStores from "~/hooks/useStores";
 import { uploadFile } from "~/utils/files";
-import { compressImage } from "~/utils/compressImage";
+import { ImageHelper } from "~/utils/ImageHelper";
 import { generateEmojiNameFromFilename } from "~/utils/emoji";
 import { useEmojiFileUpload, EmojiImageDropZone } from "./Components";
 
@@ -55,7 +55,7 @@ export function EmojiCreateDialog({ onSubmit }: Props) {
       const fileToUpload =
         file.type === "image/gif"
           ? file
-          : await compressImage(file, {
+          : await ImageHelper.compress(file, {
               maxHeight: 64,
               maxWidth: 64,
             });
@@ -94,7 +94,7 @@ export function EmojiCreateDialog({ onSubmit }: Props) {
     >
       <Text as="p" type="secondary">
         {t(
-          "Square images with transparent backgrounds work best. If your image is too large, we'll try to resize it for you."
+          "Square images with transparent backgrounds work best. If your image is too large, we’ll try to resize it for you."
         )}
       </Text>
 
@@ -116,7 +116,7 @@ export function EmojiCreateDialog({ onSubmit }: Props) {
         error={
           !isValidName
             ? t(
-                "name can only contain lowercase letters, numbers, and underscores."
+                "Name can only contain lowercase letters, numbers, and underscores."
               )
             : undefined
         }

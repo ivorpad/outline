@@ -1,8 +1,14 @@
+import data from "@emoji-mart/data";
+import type { EmojiMartData } from "@emoji-mart/data";
 import { Schema } from "prosemirror-model";
 import { EditorState, TextSelection } from "prosemirror-state";
 import type { Plugin } from "prosemirror-state";
 import ExtensionManager from "../editor/lib/ExtensionManager";
+import { populateEmojiData } from "../editor/lib/emoji";
 import { richExtensions } from "../editor/nodes";
+
+// Match the server, which loads emoji data before it builds the parser.
+populateEmojiData(data as EmojiMartData);
 
 /**
  * Extension manager using the full rich extensions from the editor.
@@ -17,6 +23,19 @@ export const schema = new Schema({
   nodes: extensionManager.nodes,
   marks: extensionManager.marks,
 });
+
+/**
+ * Markdown parser using the rich extensions and their rule plugins.
+ */
+export const parser = extensionManager.parser({
+  schema,
+  plugins: extensionManager.rulePlugins,
+});
+
+/**
+ * Markdown serializer using the rich extensions.
+ */
+export const serializer = extensionManager.serializer();
 
 /**
  * Creates an editor state with the given document and plugins.
@@ -237,4 +256,36 @@ export function doc(
       >[]
 ) {
   return schema.nodes.doc.create(null, content);
+}
+
+/**
+ * A plain-object representation of a ProseMirror node, as returned by
+ * `Node.toJSON()`.
+ */
+export interface JSONNode {
+  type: string;
+  content?: JSONNode[];
+  attrs?: Record<string, unknown>;
+  text?: string;
+}
+
+/**
+ * Recursively collects all nodes of the given type from a `Node.toJSON()`
+ * tree, including the root node itself.
+ *
+ * @param node - the JSON node to search, may be undefined for convenience.
+ * @param type - the node type name to match.
+ * @returns array of matching nodes in document order.
+ */
+export function findNodes(
+  node: JSONNode | undefined,
+  type: string
+): JSONNode[] {
+  if (!node) {
+    return [];
+  }
+  return [
+    ...(node.type === type ? [node] : []),
+    ...(node.content ?? []).flatMap((child) => findNodes(child, type)),
+  ];
 }

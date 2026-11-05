@@ -1,4 +1,4 @@
-import Router from "koa-router";
+import Router from "@koa/router";
 import env from "@server/env";
 import { AuthenticationError } from "@server/errors";
 import Logger from "@server/logging/Logger";
@@ -28,13 +28,14 @@ const cronHandler = async (ctx: APIContext<T.CronSchemaReq>) => {
 
   receivedPeriods.add(period);
 
+  const scheduledAt = Date.now();
+
   for (const name in tasks) {
     const TaskClass = tasks[name];
     if (!(TaskClass.prototype instanceof CronTask)) {
       continue;
     }
 
-    // @ts-expect-error We won't instantiate an abstract class
     const taskInstance = new TaskClass() as CronTask;
 
     const cronConfig = taskInstance.cron;
@@ -72,7 +73,10 @@ const cronHandler = async (ctx: APIContext<T.CronSchemaReq>) => {
             }/${partitions}) with delay of ${delay / 1000}s`
           );
 
-          await taskInstance.schedule({ limit, partition }, { delay });
+          await taskInstance.schedule(
+            { limit, partition, scheduledAt },
+            { delay }
+          );
         }
       } else {
         await taskInstance.schedule(
@@ -82,6 +86,7 @@ const cronHandler = async (ctx: APIContext<T.CronSchemaReq>) => {
               partitionIndex: 0,
               partitionCount: 1,
             },
+            scheduledAt,
           },
           { delay: taskDelay }
         );
@@ -93,11 +98,17 @@ const cronHandler = async (ctx: APIContext<T.CronSchemaReq>) => {
     success: true,
   };
 };
-router.get("cron.:period", validate(T.CronSchema), cronHandler);
-router.post("cron.:period", validate(T.CronSchema), cronHandler);
+router.register(
+  "cron.:period",
+  ["get", "post"],
+  [validate(T.CronSchema), cronHandler]
+);
 
 // For backwards compatibility
-router.get("utils.gc", validate(T.CronSchema), cronHandler);
-router.post("utils.gc", validate(T.CronSchema), cronHandler);
+router.register(
+  "utils.gc",
+  ["get", "post"],
+  [validate(T.CronSchema), cronHandler]
+);
 
 export default router;

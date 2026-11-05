@@ -18,6 +18,7 @@ import Time from "~/components/Time";
 import env from "~/env";
 import useQuery from "~/hooks/useQuery";
 import useStores from "~/hooks/useStores";
+import { isTruthyQueryValue } from "~/utils/urls";
 import GitHubIcon from "./Icon";
 import { GitHubConnectButton } from "./components/GitHubButton";
 
@@ -31,7 +32,7 @@ function GitHub() {
   const githubAppName = env.GITHUB_APP_NAME;
 
   React.useEffect(() => {
-    void integrations.fetchAll({
+    void integrations.fetchAllIfNeeded({
       service: IntegrationService.GitHub,
       withRelations: true,
     });
@@ -57,10 +58,10 @@ function GitHub() {
           </Trans>
         </Notice>
       )}
-      {installRequest === "true" && (
+      {isTruthyQueryValue(installRequest) && (
         <Notice>
           <Trans>
-            The owner of GitHub account has been requested to install the{" "}
+            The owner of the GitHub account has been requested to install the{" "}
             {{ githubAppName }} GitHub app. Once approved, previews will be
             shown for respective links.
           </Trans>
@@ -72,7 +73,7 @@ function GitHub() {
             <Trans>
               Enable previews of GitHub issues and pull requests in documents by
               connecting a GitHub organization or specific repositories to{" "}
-              {appName}.
+              {{ appName }}.
             </Trans>
           </Text>
 

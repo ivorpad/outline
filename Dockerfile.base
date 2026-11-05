@@ -1,5 +1,5 @@
 ARG APP_PATH=/opt/outline
-FROM node:24.22.2-bookworm@sha256:994ed664b2644b1b186516daaa1fb7aa93a1e717da2a0ff17094c765d5dbfde1 AS deps
+FROM node:26.13.0-trixie@sha256:19f8f8e74820809004eed8f88824ccfa76e89ae79cf0f6a7a38fddf3c470a5b7 AS deps
 
 ARG APP_PATH
 WORKDIR $APP_PATH
@@ -9,6 +9,7 @@ COPY ./patches ./patches
 RUN apt-get update && apt-get install -y cmake
 ENV NODE_OPTIONS="--max-old-space-size=24000"
 
+RUN npm install -g corepack
 RUN corepack enable
 RUN yarn install --immutable --network-timeout 1000000 && \
   yarn cache clean

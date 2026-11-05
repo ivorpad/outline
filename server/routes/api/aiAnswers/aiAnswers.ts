@@ -1,4 +1,4 @@
-import Router from "koa-router";
+import Router from "@koa/router";
 import { Op, literal } from "sequelize";
 import env from "@server/env";
 import { AuthorizationError } from "@server/errors";

@@ -78,6 +78,8 @@ jobs:
 
       - name: Trigger Coolify deploy
         if: github.ref == 'refs/heads/main'
+        # The Coolify server no longer answers; OVH deploys by pulling from GHCR.
+        continue-on-error: true
         run: |
           curl -sf -X GET \
             -H "Authorization: Bearer ${{ secrets.COOLIFY_API_TOKEN }}" \

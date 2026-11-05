@@ -1,4 +1,5 @@
 import { chunk, escapeRegExp } from "es-toolkit/compat";
+import { errToString } from "@shared/utils/error";
 import { AttachmentPreset } from "@shared/types";
 import { isInternalUrl } from "@shared/utils/urls";
 import attachmentCreator from "@server/commands/attachmentCreator";
@@ -29,27 +30,28 @@ export class TextHelper {
     expiresIn = 3000
   ) {
     const attachmentIds = parseAttachmentIds(text);
+    if (!attachmentIds.length) {
+      return text;
+    }
+
+    const attachments = await Attachment.findAll({
+      where: {
+        id: attachmentIds,
+        teamId,
+      },
+    });
 
     await Promise.all(
-      attachmentIds.map(async (id) => {
-        const attachment = await Attachment.findOne({
-          where: {
-            id,
-            teamId,
-          },
-        });
+      attachments.map(async (attachment) => {
+        const signedUrl = await FileStorage.getSignedUrl(
+          attachment.key,
+          expiresIn
+        );
 
-        if (attachment) {
-          const signedUrl = await FileStorage.getSignedUrl(
-            attachment.key,
-            expiresIn
-          );
-
-          text = text.replace(
-            new RegExp(escapeRegExp(attachment.redirectUrl), "g"),
-            signedUrl
-          );
-        }
+        text = text.replace(
+          new RegExp(escapeRegExp(attachment.redirectUrl), "g"),
+          signedUrl
+        );
       })
     );
     return text;
@@ -117,7 +119,7 @@ export class TextHelper {
             }
           } catch (err) {
             Logger.warn("Failed to download image for attachment", {
-              error: err.message,
+              error: errToString(err),
               src: image.src,
             });
           }

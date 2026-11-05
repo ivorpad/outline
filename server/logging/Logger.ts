@@ -6,7 +6,7 @@ import winston from "winston";
 import env from "@server/env";
 import Metrics from "@server/logging/Metrics";
 import Sentry from "@server/logging/sentry";
-import ShutdownHelper from "@server/utils/ShutdownHelper";
+import { ShutdownHelper } from "@server/utils/ShutdownHelper";
 import * as Tracing from "./tracer";
 
 type LogCategory =
@@ -23,7 +23,8 @@ type LogCategory =
   | "websockets"
   | "database"
   | "utils"
-  | "plugins";
+  | "plugins"
+  | "ai";
 
 // oxlint-disable-next-line @typescript-eslint/no-explicit-any
 type Extra = Record<string, any>;
@@ -146,9 +147,7 @@ class Logger {
         }
 
         if (request) {
-          scope.addEventProcessor((event) =>
-            Sentry.Handlers.parseRequest(event, request)
-          );
+          scope.setSDKProcessingMetadata({ request });
         }
 
         Sentry.captureException(error);
@@ -227,14 +226,14 @@ class Logger {
       const output: Record<string, any> = { ...input };
 
       for (const key of Object.keys(output)) {
-        if (isObject(output[key])) {
+        if (sensitiveFields.includes(key)) {
+          output[key] = "[Filtered]";
+        } else if (isObject(output[key])) {
           output[key] = this.sanitize(output[key], level + 1);
         } else if (isArray(output[key])) {
           output[key] = output[key].map((value: unknown) =>
             this.sanitize(value, level + 1)
           );
-        } else if (sensitiveFields.includes(key)) {
-          output[key] = "[Filtered]";
         } else {
           output[key] = this.sanitize(output[key], level + 1);
         }

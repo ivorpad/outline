@@ -1,10 +1,22 @@
 import { subMinutes } from "date-fns";
 import JWT from "jsonwebtoken";
 import type { FindOptions } from "sequelize";
+import { Minute } from "@shared/utils/time";
 import { Team, User } from "@server/models";
+import Redis from "@server/storage/redis";
 import { AuthenticationError, UserSuspendedError } from "../errors";
+import { hash } from "./crypto";
+import { RedisPrefixHelper } from "./RedisPrefixHelper";
 import type { Context } from "koa";
 
+/**
+ * Decodes a JWT token and returns its payload without verifying the
+ * signature.
+ *
+ * @param token the JWT token to decode.
+ * @returns the decoded token payload.
+ * @throws AuthenticationError if the token is missing or cannot be decoded.
+ */
 export function getJWTPayload(token: string) {
   let payload;
   if (!token) {
@@ -29,25 +41,24 @@ export function getJWTPayload(token: string) {
  *
  * @param token The JWT token to validate and extract the user from.
  * @param allowedTypes An array of allowed token types (default: ["session", "transfer"]). The token's type must be included in this array to be considered valid.
- * @returns An object containing the user associated with the token and an optional service string if included in the token's payload.
+ * @returns An object containing the user associated with the token, an optional service string if included in the token's payload, and the time the token expires at if it has one.
  * @throws AuthenticationError if the token is missing, invalid, expired, or if the token's type is not allowed.
  * @throws UserSuspendedError if the user associated with the token is suspended.
  */
 export async function getUserForJWT(
   token: string,
   allowedTypes = ["session", "transfer"]
-): Promise<{ user: User; service?: string }> {
+): Promise<{ user: User; service?: string; expiresAt?: Date }> {
   const payload = getJWTPayload(token);
+  const expiresAt = payload.expiresAt ? new Date(payload.expiresAt) : undefined;
 
   if (!allowedTypes.includes(payload.type)) {
     throw AuthenticationError("Invalid token");
   }
 
   // check the token is within it's expiration time
-  if (payload.expiresAt) {
-    if (new Date(payload.expiresAt) < new Date()) {
-      throw AuthenticationError("Expired token");
-    }
+  if (expiresAt && expiresAt < new Date()) {
+    throw AuthenticationError("Expired token");
   }
 
   const user = await User.findByPk(payload.id, {
@@ -93,9 +104,20 @@ export async function getUserForJWT(
   return {
     user,
     service: payload.service as string | undefined,
+    expiresAt,
   };
 }
 
+/**
+ * Retrieves the user associated with an email sign-in token, validating the
+ * token's type, expiration, and originating IP address. A valid token is
+ * marked as used, so each token can only be redeemed once.
+ *
+ * @param ctx the Koa context of the current request.
+ * @param token the email sign-in token to validate.
+ * @returns the user associated with the token.
+ * @throws AuthenticationError if the token is invalid, expired, from a different IP, or already used.
+ */
 export async function getUserForEmailSigninToken(
   ctx: Context,
   token: string
@@ -127,9 +149,30 @@ export async function getUserForEmailSigninToken(
     throw AuthenticationError("Invalid token");
   }
 
+  // Atomically claim the token so concurrent requests cannot both redeem it.
+  const claimed = await Redis.defaultClient.set(
+    RedisPrefixHelper.getEmailSigninTokenKey(hash(token)),
+    "1",
+    "PX",
+    Minute.ms * 10,
+    "NX"
+  );
+  if (!claimed) {
+    throw AuthenticationError("Token has already been used");
+  }
+
   return user;
 }
 
+/**
+ * Retrieves the user and new email address associated with an email update
+ * token, validating the token's type and expiration.
+ *
+ * @param token the email update token to validate.
+ * @param options find options passed when loading the user.
+ * @returns the user and the new email address.
+ * @throws AuthenticationError if the token is invalid or expired.
+ */
 export async function getDetailsForEmailUpdateToken(
   token: string,
   options: FindOptions<User> = {}

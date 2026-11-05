@@ -1,4 +1,4 @@
-// eslint-disable no-restricted-imports
+// oxlint-disable no-restricted-imports
 import type { Response } from "node-fetch";
 import { Scope } from "@shared/types";
 import { buildAdmin, buildOAuthAuthentication, buildUser } from "./factories";
@@ -60,9 +60,8 @@ export function mcpRequest(method: string, params?: Record<string, unknown>) {
 }
 
 /**
- * Parses an MCP HTTP response. The transport responds with
- * `text/event-stream` (SSE). This helper extracts the JSON-RPC response
- * from the SSE data lines.
+ * Parses an MCP HTTP response, either a JSON body or the data lines of a
+ * `text/event-stream` (SSE) body.
  *
  * @param res - the node-fetch Response from TestServer.
  * @returns the parsed JSON-RPC result object.
@@ -119,4 +118,26 @@ export async function callMcpTool(
         error?: unknown;
       }
     | undefined;
+}
+
+/**
+ * Parses list-style MCP tool content blocks into an array of items.
+ * Zero-result list tools return a single `[]` sentinel block instead of
+ * an empty content array.
+ *
+ * @param content - the content blocks from an MCP tool result.
+ * @returns the parsed list items.
+ */
+export function parseMcpListContent<T = unknown>(
+  content: { text?: string }[] | undefined
+): T[] {
+  if (!content?.length) {
+    return [];
+  }
+
+  if (content.length === 1 && content[0]?.text === "[]") {
+    return [];
+  }
+
+  return content.map((c) => JSON.parse(c.text ?? "{}") as T);
 }

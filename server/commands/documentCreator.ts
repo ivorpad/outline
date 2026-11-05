@@ -1,9 +1,13 @@
 import type { Optional } from "utility-types";
+import { PersonalCollectionId } from "@shared/constants";
 import { TextHelper } from "@shared/utils/TextHelper";
-import { Document, type Template } from "@server/models";
+import { Collection, Document, type Template } from "@server/models";
 import { DocumentHelper } from "@server/models/helpers/DocumentHelper";
 import { ProsemirrorHelper } from "@server/models/helpers/ProsemirrorHelper";
+import { authorize } from "@server/policies";
 import type { APIContext } from "@server/types";
+import { assertPresent } from "@server/validation";
+import personalCollectionLoader from "./personalCollectionLoader";
 
 type Props = Optional<
   Pick<
@@ -20,6 +24,7 @@ type Props = Optional<
     | "importId"
     | "apiImportId"
     | "fullWidth"
+    | "preferences"
     | "sourceMetadata"
     | "editorVersion"
     | "publishedAt"
@@ -34,6 +39,122 @@ type Props = Optional<
   template?: Template | null;
   index?: number;
 };
+
+type CreateLocation = {
+  /** The collection to place the document in, if any. */
+  collectionId?: string | null;
+  /** The parent document to nest the new document under, if any. */
+  parentDocumentId?: string | null;
+};
+
+/**
+ * Authorizes the creation of a document at the requested location and resolves
+ * the collection and parent document it will belong to. Shared by the
+ * documents.create API route and the MCP create_document tool so that both
+ * enforce identical permissions, including the team-level check that prevents
+ * viewers and guests from creating drafts with no collection. The collectionId
+ * "personal" refers to the personal collection of the user, which is created
+ * when it does not exist yet.
+ *
+ * @param ctx the API context containing the acting user.
+ * @param location the requested collection and/or parent document.
+ * @returns the resolved collection and parent document, when applicable.
+ * @throws AuthorizationError when the user may not create the document.
+ */
+export async function authorizeDocumentCreate(
+  ctx: APIContext,
+  { collectionId, parentDocumentId }: CreateLocation
+): Promise<{
+  collection?: Collection | null;
+  parentDocument?: Document | null;
+}> {
+  const { user } = ctx.state.auth;
+  const { transaction } = ctx.state;
+
+  if (parentDocumentId) {
+    const parentDocument = await Document.findByPk(parentDocumentId, {
+      userId: user.id,
+      transaction,
+    });
+    const collection = parentDocument?.collectionId
+      ? await Collection.findByPk(parentDocument.collectionId, {
+          userId: user.id,
+          transaction,
+        })
+      : undefined;
+    authorize(user, "createChildDocument", parentDocument, { collection });
+    return { collection, parentDocument };
+  }
+
+  if (collectionId) {
+    const collection =
+      collectionId === PersonalCollectionId
+        ? await personalCollectionLoader(ctx)
+        : await Collection.findByPk(collectionId, {
+            userId: user.id,
+            transaction,
+          });
+    authorize(user, "createDocument", collection);
+    return { collection };
+  }
+
+  authorize(user, "createDocument", user.team);
+  return {};
+}
+
+/**
+ * Authorizes publishing a document into a collection and resolves the target
+ * collection. Shared by the documents.update API route and the MCP
+ * update_document tool. Publishing places a document into a collection, so it
+ * requires create permission on the destination — separate from the update
+ * permission that governs editing a draft's content.
+ *
+ * @param ctx the API context containing the acting user.
+ * @param document the document being published.
+ * @param collectionId the destination collection, required when publishing a draft that has none.
+ * @returns the resolved destination collection.
+ * @throws AuthorizationError when the user may not publish into the collection.
+ */
+export async function authorizeDocumentPublish(
+  ctx: APIContext,
+  document: Document,
+  collectionId?: string | null
+): Promise<Collection | null | undefined> {
+  const { user } = ctx.state.auth;
+  const { transaction } = ctx.state;
+  let collection = document.collection;
+
+  if (document.isDraft) {
+    authorize(user, "publish", document);
+  }
+
+  if (!document.collectionId) {
+    assertPresent(
+      collectionId,
+      "collectionId is required to publish a draft without collection"
+    );
+    collection = await Collection.findByPk(collectionId!, {
+      userId: user.id,
+      transaction,
+    });
+  }
+
+  const parentDocument = document.parentDocumentId
+    ? await Document.findByPk(document.parentDocumentId, {
+        userId: user.id,
+        transaction,
+      })
+    : null;
+
+  // The parent only grants access when it is in the destination collection.
+  if (parentDocument && parentDocument.collectionId === collection?.id) {
+    authorize(user, "createChildDocument", parentDocument, { collection });
+  } else {
+    authorize(user, "createDocument", collection);
+  }
+
+  return collection;
+}
 
 export default async function documentCreator(
   ctx: APIContext,
@@ -52,6 +173,7 @@ export default async function documentCreator(
     content,
     template,
     fullWidth,
+    preferences,
     importId,
     apiImportId,
     createdAt,
@@ -95,7 +217,10 @@ export default async function documentCreator(
   const contentWithReplacements = content
     ? content
     : text
-      ? ProsemirrorHelper.toProsemirror(text).toJSON()
+      ? ProsemirrorHelper.assignMentionActors(
+          ProsemirrorHelper.toProsemirror(text),
+          user.id
+        ).toJSON()
       : template
         ? ProsemirrorHelper.replaceTemplateVariables(
             await DocumentHelper.toJSON(template),
@@ -120,6 +245,7 @@ export default async function documentCreator(
     apiImportId,
     sourceMetadata,
     fullWidth: fullWidth ?? template?.fullWidth,
+    preferences,
     icon: icon ?? template?.icon,
     color: color ?? template?.color,
     title: titleWithReplacements,

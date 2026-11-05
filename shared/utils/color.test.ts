@@ -1,4 +1,23 @@
-import { validateColorHex } from "./color";
+import {
+  blendColors,
+  ensureContrast,
+  hasSufficientContrast,
+  palette,
+  stringToColor,
+  toColorFormats,
+  validateColorHex,
+} from "./color";
+
+describe("stringToColor", () => {
+  it("returns a stable palette color for the input", () => {
+    expect(stringToColor("pdf")).toBe(palette[2]);
+    expect(stringToColor("a@b.com")).toBe(palette[8]);
+    expect(stringToColor("Ünïcødé 😀")).toBe(palette[2]);
+    expect(stringToColor("3f2504e0-4f89-41d3-9a0c-0305e82c3301")).toBe(
+      palette[12]
+    );
+  });
+});
 
 describe("validateColorHex", () => {
   it("accepts 3-digit hex", () => {
@@ -52,5 +71,121 @@ describe("validateColorHex", () => {
       validateColorHex("#fff; background-image: url(https://evil.example)")
     ).toBe(false);
     expect(validateColorHex("#fff;")).toBe(false);
+  });
+});
+
+describe("toColorFormats", () => {
+  it("translates hex into rgb and hsl", () => {
+    expect(toColorFormats("#ff0000")).toEqual({
+      hex: "#FF0000",
+      rgb: "rgb(255, 0, 0)",
+      hsl: "hsl(0, 100%, 50%)",
+    });
+  });
+
+  it("returns shorthand hex without expanding it", () => {
+    expect(toColorFormats("#fff")).toEqual({
+      hex: "#FFF",
+      rgb: "rgb(255, 255, 255)",
+      hsl: "hsl(0, 0%, 100%)",
+    });
+  });
+
+  it("returns the input notation unchanged", () => {
+    expect(toColorFormats("hsl(68, 69%, 45%)").hsl).toBe("hsl(68, 69%, 45%)");
+    expect(toColorFormats("rgba(0,0,0,.25)").rgb).toBe("rgba(0,0,0,.25)");
+    expect(toColorFormats("hsla(0, 0%, 0%, 0.253)").hsl).toBe(
+      "hsla(0, 0%, 0%, 0.253)"
+    );
+  });
+
+  it("preserves alpha across notations", () => {
+    expect(toColorFormats("#ff000080")).toEqual({
+      hex: "#FF000080",
+      rgb: "rgba(255, 0, 0, 0.5)",
+      hsl: "hsla(0, 100%, 50%, 0.5)",
+    });
+  });
+
+  it("accepts rgb and hsl input", () => {
+    expect(toColorFormats("rgb(0, 0, 255)").hex).toBe("#0000FF");
+    expect(toColorFormats("hsl(120, 100%, 50%)").hex).toBe("#00FF00");
+    expect(toColorFormats("rgba(0, 0, 0, 0.25)").hsl).toBe(
+      "hsla(0, 0%, 0%, 0.25)"
+    );
+  });
+
+  it("throws for values that are not colors", () => {
+    expect(() => toColorFormats("rgb(foo)")).toThrow();
+  });
+});
+
+describe("ensureContrast", () => {
+  it("returns the color when it is visible", () => {
+    expect(ensureContrast("#0366D6", true)).toBe("#0366D6");
+    expect(ensureContrast("#0366D6", false)).toBe("#0366D6");
+  });
+
+  it("returns the fallback for very dark colors in the dark theme", () => {
+    expect(ensureContrast("#000000", true)).toBe("currentColor");
+    expect(ensureContrast("#000000", false)).toBe("#000000");
+  });
+
+  it("returns the fallback for very light colors in the light theme", () => {
+    expect(ensureContrast("#FFFFFF", false)).toBe("currentColor");
+    expect(ensureContrast("#FFFFFF", true)).toBe("#FFFFFF");
+  });
+
+  it("returns the fallback when there is no color", () => {
+    expect(ensureContrast(null, true, "#111")).toBe("#111");
+    expect(ensureContrast(undefined, false)).toBe("currentColor");
+  });
+
+  it("returns currentColor unchanged", () => {
+    expect(ensureContrast("currentColor", true, "#111")).toBe("currentColor");
+  });
+});
+
+describe("hasSufficientContrast", () => {
+  it("accepts colors with enough contrast", () => {
+    expect(hasSufficientContrast("#000", "#fff")).toBe(true);
+    expect(hasSufficientContrast("#fff", "#0366d6")).toBe(true);
+  });
+
+  it("rejects colors with low contrast", () => {
+    expect(hasSufficientContrast("#fff", "#fdea9b")).toBe(false);
+    expect(hasSufficientContrast("#111319", "#000")).toBe(false);
+  });
+
+  it("uses the given minimum ratio", () => {
+    expect(hasSufficientContrast("#0366d6", "#111319", 3)).toBe(true);
+    expect(hasSufficientContrast("#0366d6", "#111319", 4.5)).toBe(false);
+  });
+
+  it("does not reject colors that cannot be parsed", () => {
+    expect(hasSufficientContrast("#12", "#fff")).toBe(true);
+  });
+});
+
+describe("blendColors", () => {
+  it("multiplies a color onto the backdrop", () => {
+    expect(blendColors("#ffffff", "#336699", "multiply")).toBe("#336699");
+    expect(blendColors("#000000", "#336699", "multiply")).toBe("#000000");
+    expect(blendColors("#808080", "#ff0000", "multiply")).toBe("#800000");
+  });
+
+  it("screens a color onto the backdrop", () => {
+    expect(blendColors("#000000", "#336699", "screen")).toBe("#336699");
+    expect(blendColors("#ffffff", "#336699", "screen")).toBe("#ffffff");
+    expect(blendColors("#808080", "#000000", "screen")).toBe("#808080");
+  });
+
+  it("applies the alpha of the color", () => {
+    expect(blendColors("rgba(0, 0, 0, 0.5)", "#ffffff", "multiply")).toBe(
+      "#808080"
+    );
+    expect(blendColors("rgba(255, 255, 255, 0)", "#336699", "screen")).toBe(
+      "#336699"
+    );
   });
 });

@@ -1,7 +1,5 @@
-// import original module declarations
 import "styled-components";
 
-// and extend them!
 declare module "styled-components" {
   interface CodeTheme {
     code: string;
@@ -120,6 +118,7 @@ declare module "styled-components" {
     sidebarCollapsedWidth: number;
     sidebarMinWidth: number;
     sidebarMaxWidth: number;
+    sidebarResizeMinWidth: number;
   }
 
   export interface DefaultTheme
@@ -166,6 +165,7 @@ declare module "styled-components" {
     mentionBackground: string;
     mentionHoverBackground: string;
     buttonNeutralBackground: string;
+    buttonNeutralHoverBackground: string;
     buttonNeutralText: string;
     buttonNeutralBorder: string;
     tooltipBackground: string;

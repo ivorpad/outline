@@ -1,6 +1,7 @@
 import React from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import { errToString } from "@shared/utils/error";
 import type { ImportInput } from "@shared/schema";
 import type { CollectionPermission } from "@shared/types";
 import { IntegrationService } from "@shared/types";
@@ -35,7 +36,7 @@ export function ImportDialog({ integrationId, onSubmit }: Props) {
   const handleStartImport = React.useCallback(async () => {
     setSubmitting();
 
-    // TODO: This can send the page info + permission once we overcome the search timeout issues.
+    // Root pages are fetched on the server to avoid Notion search timeouts.
     const input: ImportInput<IntegrationService.Notion> = [{ permission }];
 
     try {
@@ -50,7 +51,7 @@ export function ImportDialog({ integrationId, onSubmit }: Props) {
 
       onSubmit();
     } catch (err) {
-      toast.error(err.message);
+      toast.error(errToString(err));
       resetSubmitting();
     }
   }, [

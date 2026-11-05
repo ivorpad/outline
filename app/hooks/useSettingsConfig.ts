@@ -30,17 +30,17 @@ import useCurrentUser from "./useCurrentUser";
 import usePolicy from "./usePolicy";
 import useStores from "./useStores";
 
+const AI = lazy(() => import("~/scenes/Settings/AI"));
 const ApiKeys = lazy(() => import("~/scenes/Settings/ApiKeys"));
 const Applications = lazy(() => import("~/scenes/Settings/Applications"));
 const APIAndAccess = lazy(() => import("~/scenes/Settings/APIAndAccess"));
 const Authentication = lazy(() => import("~/scenes/Settings/Authentication"));
 const Details = lazy(() => import("~/scenes/Settings/Details"));
 const Export = lazy(() => import("~/scenes/Settings/Export"));
-const Features = lazy(() => import("~/scenes/Settings/Features"));
 const Groups = lazy(() => import("~/scenes/Settings/Groups"));
 const Import = lazy(() => import("~/scenes/Settings/Import"));
 const Integrations = lazy(() => import("~/scenes/Settings/Integrations"));
-const Members = lazy(() => import("~/scenes/Settings/Members"));
+const Users = lazy(() => import("~/scenes/Settings/Users"));
 const Notifications = lazy(() => import("~/scenes/Settings/Notifications"));
 const Preferences = lazy(() => import("~/scenes/Settings/Preferences"));
 const Profile = lazy(() => import("~/scenes/Settings/Profile"));
@@ -74,7 +74,7 @@ const useSettingsConfig = () => {
   const { t } = useTranslation();
 
   useEffect(() => {
-    void integrations.fetchAll();
+    void integrations.fetchAllIfNeeded();
   }, [integrations]);
 
   const config = useComputed(() => {
@@ -114,17 +114,35 @@ const useSettingsConfig = () => {
         preload: APIAndAccess.preload,
         enabled: true,
         group: t("Account"),
-        icon: PadlockIcon,
+        icon: CodeIcon,
       },
       // Workspace
       {
-        name: t("Details"),
+        name: t("General"),
         path: settingsPath("details"),
         component: Details.Component,
         preload: Details.preload,
         enabled: can.update,
         group: t("Workspace"),
         icon: TeamIcon,
+      },
+      {
+        name: t("Users"),
+        path: settingsPath("users"),
+        component: Users.Component,
+        preload: Users.preload,
+        enabled: can.listUsers,
+        group: t("Workspace"),
+        icon: UserIcon,
+      },
+      {
+        name: t("Groups"),
+        path: settingsPath("groups"),
+        component: Groups.Component,
+        preload: Groups.preload,
+        enabled: can.listGroups,
+        group: t("Workspace"),
+        icon: GroupIcon,
       },
       {
         name: t("Authentication"),
@@ -145,33 +163,6 @@ const useSettingsConfig = () => {
         icon: ShieldIcon,
       },
       {
-        name: t("AI"),
-        path: settingsPath("features"),
-        component: Features.Component,
-        preload: Features.preload,
-        enabled: can.update,
-        group: t("Workspace"),
-        icon: SparklesIcon,
-      },
-      {
-        name: t("Members"),
-        path: settingsPath("members"),
-        component: Members.Component,
-        preload: Members.preload,
-        enabled: can.listUsers,
-        group: t("Workspace"),
-        icon: UserIcon,
-      },
-      {
-        name: t("Groups"),
-        path: settingsPath("groups"),
-        component: Groups.Component,
-        preload: Groups.preload,
-        enabled: can.listGroups,
-        group: t("Workspace"),
-        icon: GroupIcon,
-      },
-      {
         name: t("Templates"),
         path: settingsPath("templates"),
         component: Templates.Component,
@@ -190,25 +181,16 @@ const useSettingsConfig = () => {
         icon: SmileyIcon,
       },
       {
-        name: t("API Keys"),
-        path: settingsPath("api-keys"),
-        component: ApiKeys.Component,
-        preload: ApiKeys.preload,
-        enabled: can.listApiKeys,
+        name: t("AI"),
+        path: settingsPath("ai"),
+        component: AI.Component,
+        preload: AI.preload,
+        enabled: can.update,
         group: t("Workspace"),
-        icon: CodeIcon,
+        icon: SparklesIcon,
       },
       {
-        name: t("Applications"),
-        path: settingsPath("applications"),
-        component: Applications.Component,
-        preload: Applications.preload,
-        enabled: can.listOAuthClients,
-        group: t("Workspace"),
-        icon: InternetIcon,
-      },
-      {
-        name: t("Shared Links"),
+        name: t("Shared links"),
         path: settingsPath("shares"),
         component: Shares.Component,
         preload: Shares.preload,
@@ -255,6 +237,25 @@ const useSettingsConfig = () => {
         enabled: can.update,
         group: t("Integrations"),
         icon: PlusIcon,
+      },
+      // Developer
+      {
+        name: t("API keys"),
+        path: settingsPath("api-keys"),
+        component: ApiKeys.Component,
+        preload: ApiKeys.preload,
+        enabled: can.listApiKeys,
+        group: t("Developer"),
+        icon: CodeIcon,
+      },
+      {
+        name: t("Applications"),
+        path: settingsPath("applications"),
+        component: Applications.Component,
+        preload: Applications.preload,
+        enabled: can.listOAuthClients,
+        group: t("Developer"),
+        icon: InternetIcon,
       },
     ];
 

@@ -1,3 +1,4 @@
+import { FetchError } from "node-fetch";
 import {
   http,
   HttpResponse,
@@ -5,14 +6,25 @@ import {
   type StrictRequest,
 } from "msw";
 import { server } from "@server/test/msw";
-import { WebhookDelivery } from "@server/models";
+import { Revision, WebhookDelivery } from "@server/models";
 import {
+  buildCollection,
+  buildComment,
+  buildDocument,
+  buildPersonalCollection,
   buildUser,
   buildWebhookDelivery,
   buildWebhookSubscription,
 } from "@server/test/factories";
-import type { UserEvent } from "@server/types";
-import DeliverWebhookTask from "./DeliverWebhookTask";
+import type {
+  CommentEvent,
+  DocumentEvent,
+  RevisionEvent,
+  UserEvent,
+} from "@server/types";
+import DeliverWebhookTask, {
+  isExpectedNetworkError,
+} from "./DeliverWebhookTask";
 
 const ip = "127.0.0.1";
 
@@ -37,6 +49,50 @@ const captureWebhook = (
 };
 
 describe("DeliverWebhookTask", () => {
+  test("should not deliver events in a personal collection", async () => {
+    const owner = await buildUser();
+    const subscription = await buildWebhookSubscription({
+      teamId: owner.teamId,
+      createdById: owner.id,
+      url: "http://example.com",
+      events: ["*"],
+    });
+    const previous = await buildCollection({
+      teamId: owner.teamId,
+      userId: owner.id,
+    });
+    const personal = await buildPersonalCollection(owner);
+    const document = await buildDocument({
+      teamId: owner.teamId,
+      userId: owner.id,
+      collectionId: personal.id,
+    });
+    const captured = captureWebhook("http://example.com");
+
+    // The event was queued before the document moved to the personal collection.
+    const event: DocumentEvent = {
+      name: "documents.update",
+      documentId: document.id,
+      collectionId: previous.id,
+      teamId: owner.teamId,
+      actorId: owner.id,
+      ip,
+      createdAt: new Date().toISOString(),
+      data: { done: true },
+    };
+    await new DeliverWebhookTask().perform({
+      subscriptionId: subscription.id,
+      event,
+    });
+
+    expect(captured.length).toBe(0);
+    expect(
+      await WebhookDelivery.count({
+        where: { webhookSubscriptionId: subscription.id },
+      })
+    ).toBe(0);
+  });
+
   test("should hit the subscription url and record a delivery", async () => {
     const subscription = await buildWebhookSubscription({
       url: "http://example.com",
@@ -108,6 +164,89 @@ describe("DeliverWebhookTask", () => {
     expect(captured[0].request.headers.get("Outline-Signature")).toMatch(
       /^t=[0-9]+,s=[a-z0-9]+$/
     );
+  });
+
+  test("should include the document collectionId in comment events", async () => {
+    const user = await buildUser();
+    const subscription = await buildWebhookSubscription({
+      teamId: user.teamId,
+      createdById: user.id,
+      url: "http://example.com",
+      events: ["*"],
+    });
+    const collection = await buildCollection({
+      teamId: user.teamId,
+      userId: user.id,
+    });
+    const document = await buildDocument({
+      teamId: user.teamId,
+      userId: user.id,
+      collectionId: collection.id,
+    });
+    const comment = await buildComment({
+      userId: user.id,
+      documentId: document.id,
+    });
+    const captured = captureWebhook("http://example.com");
+
+    const event: CommentEvent = {
+      name: "comments.create",
+      modelId: comment.id,
+      documentId: document.id,
+      teamId: user.teamId,
+      actorId: user.id,
+      ip,
+    };
+    await new DeliverWebhookTask().perform({
+      subscriptionId: subscription.id,
+      event,
+    });
+
+    expect(captured.length).toBe(1);
+    const parsedBody = JSON.parse(captured[0].body);
+    expect(parsedBody.payload.id).toBe(comment.id);
+    expect(parsedBody.payload.model.collectionId).toBe(collection.id);
+    expect(parsedBody.payload.model.documentId).toBe(document.id);
+  });
+
+  test("should include the document collectionId in revision events", async () => {
+    const user = await buildUser();
+    const subscription = await buildWebhookSubscription({
+      teamId: user.teamId,
+      createdById: user.id,
+      url: "http://example.com",
+      events: ["*"],
+    });
+    const collection = await buildCollection({
+      teamId: user.teamId,
+      userId: user.id,
+    });
+    const document = await buildDocument({
+      teamId: user.teamId,
+      userId: user.id,
+      collectionId: collection.id,
+    });
+    const revision = await Revision.buildFromDocument(document).save();
+    const captured = captureWebhook("http://example.com");
+
+    const event: RevisionEvent = {
+      name: "revisions.create",
+      modelId: revision.id,
+      documentId: document.id,
+      teamId: user.teamId,
+      actorId: user.id,
+      ip,
+    };
+    await new DeliverWebhookTask().perform({
+      subscriptionId: subscription.id,
+      event,
+    });
+
+    expect(captured.length).toBe(1);
+    const parsedBody = JSON.parse(captured[0].body);
+    expect(parsedBody.payload.id).toBe(revision.id);
+    expect(parsedBody.payload.model.collectionId).toBe(collection.id);
+    expect(parsedBody.payload.model.documentId).toBe(document.id);
   });
 
   test("should hit the subscription url when the eventing model doesn't exist", async () => {
@@ -241,5 +380,65 @@ describe("DeliverWebhookTask", () => {
     expect(delivery.status).toBe("failed");
     expect(delivery.statusCode).toBe(500);
     expect(delivery.responseBody).toEqual('{"message":"Failure"}');
+  });
+});
+
+describe("isExpectedNetworkError", () => {
+  test("treats node-fetch FetchError as expected", () => {
+    expect(
+      isExpectedNetworkError(
+        new FetchError("request to https://example.com failed", "system")
+      )
+    ).toBe(true);
+  });
+
+  test("treats raw socket errors as expected", () => {
+    expect(isExpectedNetworkError(new Error("socket hang up"))).toBe(true);
+    expect(
+      isExpectedNetworkError(
+        Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" })
+      )
+    ).toBe(true);
+  });
+
+  test("treats connection error codes as expected", () => {
+    for (const code of [
+      "ECONNREFUSED",
+      "ETIMEDOUT",
+      "EHOSTUNREACH",
+      "ENOTFOUND",
+      "EAI_AGAIN",
+    ]) {
+      expect(
+        isExpectedNetworkError(Object.assign(new Error("boom"), { code }))
+      ).toBe(true);
+    }
+  });
+
+  test("treats invalid certificate errors as expected", () => {
+    expect(
+      isExpectedNetworkError(
+        Object.assign(new Error("self signed certificate"), {
+          code: "DEPTH_ZERO_SELF_SIGNED_CERT",
+        })
+      )
+    ).toBe(true);
+  });
+
+  test("treats the request timeout thrown by the fetch wrapper as expected", () => {
+    expect(
+      isExpectedNetworkError(new Error("Request timeout after 5000ms"))
+    ).toBe(true);
+  });
+
+  test("does not treat unrelated errors as expected", () => {
+    expect(
+      isExpectedNetworkError(new TypeError("undefined is not a function"))
+    ).toBe(false);
+    expect(
+      isExpectedNetworkError(new Error("Cannot read property foo of undefined"))
+    ).toBe(false);
+    expect(isExpectedNetworkError("socket hang up")).toBe(false);
+    expect(isExpectedNetworkError(undefined)).toBe(false);
   });
 });

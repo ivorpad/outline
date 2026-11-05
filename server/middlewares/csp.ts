@@ -1,33 +1,47 @@
 import crypto from "node:crypto";
 import type { Context, Next } from "koa";
-import { contentSecurityPolicy } from "koa-helmet";
+import helmet from "koa-helmet";
+import { asyncNoop } from "es-toolkit";
 import { uniq } from "es-toolkit/compat";
 import env from "@server/env";
 
-const getBucketOrigin = () => {
+const getBucketOrigins = (): string[] => {
   if (env.AWS_S3_ACCELERATE_URL) {
-    return new URL(env.AWS_S3_ACCELERATE_URL).origin;
+    return [new URL(env.AWS_S3_ACCELERATE_URL).origin];
   }
 
   const url = env.AWS_S3_UPLOAD_BUCKET_URL || "";
   if (!url) {
-    return;
+    return [];
   }
 
   try {
     const parsedUrl = new URL(url);
+    const bucket = env.AWS_S3_UPLOAD_BUCKET_NAME;
+    const host =
+      bucket && parsedUrl.host.startsWith(`${bucket}.`)
+        ? parsedUrl.host.substring(bucket.length + 1) // +1 for the dot
+        : parsedUrl.host;
+    const origins = [`${parsedUrl.protocol}//${host}`];
 
-    if (
-      env.AWS_S3_UPLOAD_BUCKET_NAME &&
-      parsedUrl.hostname.startsWith(`${env.AWS_S3_UPLOAD_BUCKET_NAME}.`)
-    ) {
-      const hostnameWithoutBucket = parsedUrl.hostname.substring(
-        env.AWS_S3_UPLOAD_BUCKET_NAME.length + 1 // +1 for the dot
-      );
-      return `${parsedUrl.protocol}//${hostnameWithoutBucket}`;
+    // Without path-style the S3 client signs urls on the bucket subdomain.
+    if (bucket && !env.AWS_S3_FORCE_PATH_STYLE) {
+      origins.push(`${parsedUrl.protocol}//${bucket}.${host}`);
     }
 
-    return parsedUrl.origin;
+    return origins;
+  } catch {
+    return [];
+  }
+};
+
+const getCloudFrontOrigin = () => {
+  if (!env.AWS_CLOUDFRONT_URL) {
+    return;
+  }
+
+  try {
+    return new URL(env.AWS_CLOUDFRONT_URL).origin;
   } catch {
     return;
   }
@@ -36,6 +50,28 @@ const getBucketOrigin = () => {
 interface CSPOptions {
   /** Additional origins to allow as script sources. */
   extraScriptSrc?: string[];
+}
+
+/**
+ * Allow additional origins as script sources in the Content Security Policy of
+ * the current response. Must be called before the response is sent.
+ *
+ * @param ctx The Koa context of the current request.
+ * @param sources The origins to allow.
+ */
+export function allowScriptSrc(ctx: Context, sources: string[]) {
+  ctx.state.cspScriptSrc = [...(ctx.state.cspScriptSrc ?? []), ...sources];
+}
+
+/**
+ * Allow additional origins as style sources in the Content Security Policy of
+ * the current response. Must be called before the response is sent.
+ *
+ * @param ctx The Koa context of the current request.
+ * @param sources The origins to allow.
+ */
+export function allowStyleSrc(ctx: Context, sources: string[]) {
+  ctx.state.cspStyleSrc = [...(ctx.state.cspStyleSrc ?? []), ...sources];
 }
 
 /**
@@ -59,8 +95,8 @@ export default function createCSPMiddleware(options?: CSPOptions) {
 
   // Allow to load assets from Vite
   if (!env.isProduction) {
-    scriptSrc.push(env.URL.replace(`:${env.PORT}`, ":3001"));
-    scriptSrc.push("localhost:3001");
+    scriptSrc.push(env.URL.replace(`:${env.PORT}`, `:${env.vitePort}`));
+    scriptSrc.push(`localhost:${env.vitePort}`);
   } else {
     scriptSrc.push(env.URL);
   }
@@ -76,34 +112,62 @@ export default function createCSPMiddleware(options?: CSPOptions) {
     defaultSrc.push(env.CDN_URL);
   }
 
-  const bucketOrigin = getBucketOrigin();
-  if (bucketOrigin) {
-    objectSrc.push(bucketOrigin);
+  objectSrc.push(...getBucketOrigins());
+
+  const cloudFrontOrigin = getCloudFrontOrigin();
+  if (cloudFrontOrigin) {
+    objectSrc.push(cloudFrontOrigin);
   }
 
-  return function cspMiddleware(ctx: Context, next: Next) {
+  return async function cspMiddleware(ctx: Context, next: Next) {
     ctx.state.cspNonce = crypto.randomBytes(16).toString("hex");
+    ctx.state.cspScriptSrc = [];
+    ctx.state.cspStyleSrc = [];
 
-    return contentSecurityPolicy({
-      directives: {
-        baseUri: ["'none'"],
-        defaultSrc,
-        styleSrc,
-        scriptSrc: [
-          ...uniq(scriptSrc),
-          ...(options?.extraScriptSrc ?? []),
-          env.DEVELOPMENT_UNSAFE_INLINE_CSP
-            ? "'unsafe-inline'"
-            : `'nonce-${ctx.state.cspNonce}'`,
-        ],
-        mediaSrc: ["*", "data:", "blob:"],
-        imgSrc: ["*", "data:", "blob:"],
-        frameSrc: ["*", "data:"],
-        objectSrc,
-        // Do not use connect-src: because self + websockets does not work in
-        // Safari, ref: https://bugs.webkit.org/show_bug.cgi?id=201591
-        connectSrc: ["*"],
-      },
-    })(ctx, next);
+    try {
+      await next();
+    } finally {
+      // The policy is written once downstream middleware has had the chance to
+      // allow additional sources for the response, see `allowScriptSrc` and
+      // `allowStyleSrc`.
+      if (!ctx.res.headersSent) {
+        // The service worker is served from the same origin as the document,
+        // which may be a custom domain that is not present in scriptSrc.
+        const directives = {
+          baseUri: ["'none'"],
+          defaultSrc,
+          styleSrc: uniq([...styleSrc, ...(ctx.state.cspStyleSrc as string[])]),
+          scriptSrc: uniq([
+            ...scriptSrc,
+            // Allow the service worker to importScripts the workbox runtime,
+            // which is served under /static on the document host.. Scoped to
+            // the /static path so only immutable build assets are permitted,
+            // not ugc served elsewhere on the same origin.
+            `${ctx.host}/static/`,
+            ...(options?.extraScriptSrc ?? []),
+            ...(ctx.state.cspScriptSrc as string[]),
+            env.DEVELOPMENT_UNSAFE_INLINE_CSP
+              ? "'unsafe-inline'"
+              : `'nonce-${ctx.state.cspNonce}'`,
+          ]),
+          mediaSrc: ["*", "data:", "blob:"],
+          imgSrc: ["*", "data:", "blob:"],
+          frameSrc: ["*", "data:"],
+          workerSrc: ["'self'"],
+          objectSrc,
+          // Do not use connect-src: because self + websockets does not work in
+          // Safari, ref: https://bugs.webkit.org/show_bug.cgi?id=201591
+          connectSrc: ["*"],
+        };
+
+        // Helmet's default directives are not merged in, they include
+        // frame-ancestors and form-action restrictions that break embeds and
+        // OAuth redirects.
+        await helmet.contentSecurityPolicy({ useDefaults: false, directives })(
+          ctx,
+          asyncNoop
+        );
+      }
+    }
   };
 }

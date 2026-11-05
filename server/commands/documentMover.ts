@@ -24,7 +24,7 @@ async function documentMover(
   ctx: APIContext,
   {
     document,
-    collectionId = null,
+    collectionId,
     parentDocumentId = null,
     // convert undefined to null so parentId comparison treats them as equal
     index,
@@ -45,7 +45,7 @@ async function documentMover(
   const collection = await Collection.findByPk(document.collectionId!, {
     includeDocumentStructure: true,
     transaction,
-    lock: Transaction.LOCK.UPDATE,
+    lock: Transaction.LOCK.NO_KEY_UPDATE,
     paranoid: false,
   });
 
@@ -54,7 +54,7 @@ async function documentMover(
     newCollection = await Collection.findByPk(collectionId, {
       includeDocumentStructure: true,
       transaction,
-      lock: Transaction.LOCK.UPDATE,
+      lock: Transaction.LOCK.NO_KEY_UPDATE,
     });
   } else if (!collectionId) {
     newCollection = null;
@@ -190,6 +190,21 @@ async function documentMover(
     });
 
     await pin?.destroyWithCtx(ctx);
+
+    // Pins are not shown for documents in a personal collection, so any pin of
+    // the moved documents, including pins to home, is removed.
+    if (newCollection?.isPersonal) {
+      const pins = await Pin.findAll({
+        where: {
+          documentId: [document.id, ...childDocumentIds],
+        },
+        transaction,
+        lock: Transaction.LOCK.UPDATE,
+      });
+      for (const personalPin of pins) {
+        await personalPin.destroyWithCtx(ctx);
+      }
+    }
   }
 
   result.documents.push(document);

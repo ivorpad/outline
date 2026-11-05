@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useHistory, useLocation } from "react-router-dom";
 import { toast } from "sonner";
+import { errToString } from "@shared/utils/error";
 import Button from "~/components/Button";
 import Empty from "~/components/Empty";
 import Heading from "~/components/Heading";
@@ -57,7 +58,7 @@ const Error403 = ({ documentId }: Props) => {
       setRequested(true);
       toast.success(t("Access request sent"));
     } catch (err) {
-      toast.error(err.message);
+      toast.error(errToString(err));
     } finally {
       setRequesting(false);
     }
@@ -82,7 +83,7 @@ const Error403 = ({ documentId }: Props) => {
         ) : (
           <Empty size="large">
             {t(
-              "It doesn't look like you have permission to access this document. You can request access."
+              "It doesn’t look like you have permission to access this document. You can request access."
             )}
           </Empty>
         )}

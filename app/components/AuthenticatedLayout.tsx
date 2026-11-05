@@ -1,20 +1,22 @@
 import { observer } from "mobx-react";
 import * as React from "react";
-import { useLocation } from "react-router-dom";
+import { DragAndDropProvider } from "~/components/DragAndDrop";
 import ErrorSuspended from "~/scenes/Errors/ErrorSuspended";
 import Layout from "~/components/Layout";
 import RegisterKeyDown from "~/components/RegisterKeyDown";
 import { RightSidebarProvider } from "~/components/RightSidebarContext";
 import Sidebar from "~/components/Sidebar";
+import { rootWebMCPActions } from "~/actions/definitions/webmcp";
 import useCurrentTeam from "~/hooks/useCurrentTeam";
 import useKeyDown from "~/hooks/useKeyDown";
+import useWebMCPActions from "~/hooks/useWebMCPActions";
 import { usePostLoginPath } from "~/hooks/useLastVisitedPath";
 import usePolicy from "~/hooks/usePolicy";
+import { useLocationSelector } from "~/hooks/useLocationSelector";
 import useStores from "~/hooks/useStores";
 import Logger from "~/utils/Logger";
 import history from "~/utils/history";
-import { isModKey } from "@shared/utils/keyboard";
-import lazyWithRetry from "~/utils/lazyWithRetry";
+import lazyWithRetry from "@shared/utils/lazyWithRetry";
 import {
   searchPath,
   newDocumentPath,
@@ -35,19 +37,20 @@ type Props = {
   children?: React.ReactNode;
 };
 
-const AuthenticatedLayout: React.FC = ({ children }: Props) => {
+const AuthenticatedLayout: React.FC<Props> = ({ children }: Props) => {
   const { ui, auth } = useStores();
-  const location = useLocation();
-  const layoutRef = React.useRef<HTMLDivElement>(null);
+  const isSettings = useLocationSelector((location) =>
+    location.pathname.startsWith(settingsPath())
+  );
+  // State rather than a ref, so that portals receive the element once mounted.
+  const [layoutElement, setLayoutElement] =
+    React.useState<HTMLDivElement | null>(null);
   const canCollection = usePolicy(ui.activeCollectionId);
   const team = useCurrentTeam();
   const [spendPostLoginPath] = usePostLoginPath();
 
-  useKeyDown(".", (event) => {
-    if (isModKey(event)) {
-      ui.toggleCollapsedSidebar();
-    }
-  });
+  useKeyDown(".", () => ui.toggleCollapsedSidebar(), { metaKey: true });
+  useWebMCPActions(rootWebMCPActions);
 
   const goToSearch = (ev: KeyboardEvent) => {
     if (!ev.metaKey && !ev.ctrlKey) {
@@ -87,8 +90,6 @@ const AuthenticatedLayout: React.FC = ({ children }: Props) => {
     return <ErrorSuspended />;
   }
 
-  const isSettings = location.pathname.startsWith(settingsPath());
-
   const sidebar = (
     <Fade>
       <React.Suspense fallback={null}>
@@ -103,15 +104,22 @@ const AuthenticatedLayout: React.FC = ({ children }: Props) => {
   return (
     <DocumentContextProvider>
       <RightSidebarProvider>
-        <PortalContext.Provider value={layoutRef.current}>
-          <Layout title={team.name} sidebar={sidebar} ref={layoutRef}>
-            <RegisterKeyDown trigger="n" handler={goToNewDocument} />
-            <RegisterKeyDown trigger="t" handler={goToSearch} />
-            <RegisterKeyDown trigger="/" handler={goToSearch} />
-            {children}
-            <CommandBar />
-            <NotificationBadge />
-          </Layout>
+        <PortalContext.Provider value={layoutElement}>
+          <DragAndDropProvider>
+            <Layout
+              title={team.name}
+              sidebar={sidebar}
+              sidebarCanCollapse={!isSettings}
+              ref={setLayoutElement}
+            >
+              <RegisterKeyDown trigger="n" handler={goToNewDocument} />
+              <RegisterKeyDown trigger="t" handler={goToSearch} />
+              <RegisterKeyDown trigger="/" handler={goToSearch} />
+              {children}
+              <CommandBar />
+              <NotificationBadge />
+            </Layout>
+          </DragAndDropProvider>
         </PortalContext.Provider>
       </RightSidebarProvider>
     </DocumentContextProvider>

@@ -4,6 +4,7 @@ import {
   buildCollection,
   buildDocument,
   buildDraftDocument,
+  buildPersonalCollection,
   buildPin,
   buildUser,
 } from "@server/test/factories";
@@ -33,6 +34,17 @@ describe("#pins.create", () => {
       teamId: admin.teamId,
       collectionId: collection.id,
     });
+  });
+
+  it("should not pin to a personal collection", async () => {
+    const personal = await buildPersonalCollection(admin);
+    const res = await server.post("/api/pins.create", admin, {
+      body: {
+        documentId: document.id,
+        collectionId: personal.id,
+      },
+    });
+    expect(res.status).toEqual(403);
   });
 
   it("should fail with status 401 unauthorized when user token is missing", async () => {
@@ -360,6 +372,34 @@ describe("#pins.list", () => {
     expect(body.data.pins[0].id).toEqual(pin.id);
     expect(body.data.documents).toHaveLength(1);
     expect(body.data.documents[0].id).toEqual(doc.id);
+  });
+
+  it("should not return home pins for documents in a collection the user cannot read", async () => {
+    const admin = await buildAdmin({ teamId: user.teamId });
+    const privateCollection = await buildCollection({
+      teamId: admin.teamId,
+      createdById: admin.id,
+      permission: null,
+    });
+    const privateDocument = await buildDocument({
+      teamId: admin.teamId,
+      collectionId: privateCollection.id,
+    });
+    const privatePin = await buildPin({
+      createdById: admin.id,
+      documentId: privateDocument.id,
+      teamId: admin.teamId,
+    });
+
+    const res = await server.post("/api/pins.list", user);
+    const body = await res.json();
+    expect(res.status).toEqual(200);
+    const pinIds = body.data.pins.map((p: { id: string }) => p.id);
+    expect(pinIds).not.toContain(privatePin.id);
+    expect(
+      body.data.pins.map((p: { documentId: string }) => p.documentId)
+    ).not.toContain(privateDocument.id);
+    expect(body.data.pins).toHaveLength(2);
   });
 
   it("should fail with status 403 forbidden when collection does not exist", async () => {

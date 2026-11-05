@@ -41,9 +41,12 @@ export default class Emoji extends Extension {
         },
       },
       inline: true,
+      // Legacy documents contain emoji nodes with text content, so the schema
+      // stays permissive – `atom` is what prevents content being added or edited.
       content: "text*",
       marks: "",
       group: "inline",
+      atom: true,
       selectable: false,
       parseDOM: [
         {
@@ -90,7 +93,7 @@ export default class Emoji extends Extension {
     return [
       new Plugin({
         props: {
-          // Placing the caret infront of an emoji is tricky as click events directly
+          // Placing the caret in front of an emoji is tricky as click events directly
           // on the emoji will not behave the same way as clicks on text characters, this
           // plugin ensures that clicking on an emoji behaves more naturally.
           handleClickOn: (view, _pos, node, nodePos, event) => {

@@ -1,11 +1,13 @@
 import {
   ApiKey,
+  Collection,
   GroupUser,
   OAuthAuthentication,
   Star,
   Subscription,
   UserAuthentication,
   UserMembership,
+  WebhookSubscription,
 } from "@server/models";
 import { sequelize } from "@server/storage/database";
 import type { Event as TEvent, UserEvent } from "@server/types";
@@ -59,6 +61,27 @@ export default class UserDeletedProcessor extends BaseProcessor {
         },
         transaction,
       });
+      // The personal collection becomes an ordinary private collection, so
+      // that admins can recover the documents in it.
+      await Collection.update(
+        { ownerId: null },
+        {
+          where: {
+            ownerId: event.userId,
+          },
+          transaction,
+        }
+      );
+      await WebhookSubscription.update(
+        { enabled: false },
+        {
+          where: {
+            createdById: event.userId,
+            enabled: true,
+          },
+          transaction,
+        }
+      );
     });
   }
 }

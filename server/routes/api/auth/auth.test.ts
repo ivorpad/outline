@@ -1,6 +1,15 @@
+// @vitest-isolate true
 import { faker } from "@faker-js/faker";
 import { randomUUID } from "node:crypto";
-import { buildUser, buildTeam, buildUserPasskey } from "@server/test/factories";
+import { Scope } from "@shared/types";
+import {
+  buildApiKey,
+  buildOAuthAuthentication,
+  buildUser,
+  buildTeam,
+  buildUserPasskey,
+  buildSubdomain,
+} from "@server/test/factories";
 import { getTestServer, setSelfHosted } from "@server/test/support";
 
 const mockTeamInSessionId = randomUUID();
@@ -39,9 +48,53 @@ describe("#auth.info", () => {
     expect(availableTeamIds).toContain(team.id);
     expect(availableTeamIds).toContain(team2.id);
     expect(availableTeamIds).toContain(team3.id);
+
+    const isSignedIn = (id: string) =>
+      body.data.availableTeams.find((t: { id: string }) => t.id === id)
+        .isSignedIn;
+    expect(isSignedIn(team.id)).toBe(true);
+    expect(isSignedIn(team2.id)).toBe(false);
+    expect(isSignedIn(team3.id)).toBe(true);
     expect(body.data.user.name).toBe(user.name);
     expect(body.data.team.name).toBe(team.name);
     expect(body.data.team.allowedDomains).toEqual([]);
+  });
+
+  it("should return a collaboration token for a session", async () => {
+    const user = await buildUser();
+    const res = await server.post("/api/auth.info", user);
+    const body = await res.json();
+    expect(res.status).toEqual(200);
+    expect(body.data.collaborationToken).toBeTruthy();
+  });
+
+  it("should not return a collaboration token for an API key", async () => {
+    const user = await buildUser();
+    const key = await buildApiKey({ userId: user.id });
+    const res = await server.post("/api/auth.info", {
+      headers: {
+        Authorization: `Bearer ${key.value}`,
+      },
+    });
+    const body = await res.json();
+    expect(res.status).toEqual(200);
+    expect(body.data.collaborationToken).toBeUndefined();
+  });
+
+  it("should not return a collaboration token for an OAuth access token", async () => {
+    const user = await buildUser();
+    const authentication = await buildOAuthAuthentication({
+      user,
+      scope: [Scope.Read],
+    });
+    const res = await server.post("/api/auth.info", {
+      headers: {
+        Authorization: `Bearer ${authentication.accessToken}`,
+      },
+    });
+    const body = await res.json();
+    expect(res.status).toEqual(200);
+    expect(body.data.collaborationToken).toBeUndefined();
   });
 
   it("should require the team to not be deleted", async () => {
@@ -86,7 +139,7 @@ describe("#auth.config", () => {
   });
 
   it("should return available providers for team subdomain", async () => {
-    const subdomain = faker.internet.domainWord();
+    const subdomain = buildSubdomain();
     await buildTeam({
       guestSignin: false,
       subdomain,
@@ -132,7 +185,7 @@ describe("#auth.config", () => {
   });
 
   it("should return email provider for team when guest signin enabled", async () => {
-    const subdomain = faker.internet.domainWord();
+    const subdomain = buildSubdomain();
     await buildTeam({
       guestSignin: true,
       subdomain,
@@ -156,7 +209,7 @@ describe("#auth.config", () => {
   });
 
   it("should not return provider when disabled", async () => {
-    const subdomain = faker.internet.domainWord();
+    const subdomain = buildSubdomain();
     await buildTeam({
       guestSignin: false,
       subdomain,
@@ -179,7 +232,7 @@ describe("#auth.config", () => {
   });
 
   it("should not return passkeys provider when passkeysEnabled but no passkeys exist", async () => {
-    const subdomain = faker.internet.domainWord();
+    const subdomain = buildSubdomain();
     await buildTeam({
       guestSignin: false,
       passkeysEnabled: true,
@@ -203,7 +256,7 @@ describe("#auth.config", () => {
   });
 
   it("should return passkeys provider when passkeysEnabled and passkeys exist", async () => {
-    const subdomain = faker.internet.domainWord();
+    const subdomain = buildSubdomain();
     const team = await buildTeam({
       guestSignin: false,
       passkeysEnabled: true,

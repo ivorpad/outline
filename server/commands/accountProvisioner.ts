@@ -1,13 +1,13 @@
 import path from "node:path";
 import { readFile } from "fs-extra";
 import invariant from "invariant";
+import { errToString, errToId } from "@shared/utils/error";
 import { CollectionPermission, UserRole } from "@shared/types";
 import env from "@server/env";
 import {
   InvalidAuthenticationError,
   AuthenticationProviderDisabledError,
 } from "@server/errors";
-import Logger from "@server/logging/Logger";
 import { traceFunction } from "@server/logging/tracing";
 import type { User } from "@server/models";
 import {
@@ -17,10 +17,10 @@ import {
   Event,
   Team,
 } from "@server/models";
+import AuthenticationHelper from "@server/models/helpers/AuthenticationHelper";
 import { DocumentHelper } from "@server/models/helpers/DocumentHelper";
 import { sequelize } from "@server/storage/database";
-import { PluginManager } from "@server/utils/PluginManager";
-import groupsSyncer from "./groupsSyncer";
+import SyncUserGroupsTask from "@server/queues/tasks/SyncUserGroupsTask";
 import teamProvisioner from "./teamProvisioner";
 import userProvisioner from "./userProvisioner";
 import type { APIContext } from "@server/types";
@@ -34,6 +34,8 @@ type Props = {
     name: string;
     /** The email address of the user */
     email: string;
+    /** Whether the provider has verified the user owns the email address */
+    emailVerified?: boolean;
     /** The public url of an image representing the user */
     avatarUrl?: string | null;
     /** The language of the user, if known */
@@ -133,7 +135,7 @@ async function accountProvisioner(
   } catch (err) {
     // The account could not be provisioned for the provided teamId
     // check to see if we can try authentication using email matching only
-    if (err.id === "invalid_authentication") {
+    if (errToId(err) === "invalid_authentication") {
       const authProvider = await AuthenticationProvider.findOne({
         where: {
           name: authenticationProviderParams.name,
@@ -160,10 +162,10 @@ async function accountProvisioner(
     }
 
     if (!result) {
-      if (err.id) {
+      if (errToId(err)) {
         throw err;
       } else {
-        throw InvalidAuthenticationError(err.message);
+        throw InvalidAuthenticationError(errToString(err));
       }
     }
   }
@@ -178,6 +180,10 @@ async function accountProvisioner(
   result = await userProvisioner(ctx, {
     name: userParams.name,
     email: userParams.email,
+    emailVerified: userParams.emailVerified,
+    authenticationProviderName: AuthenticationHelper.getProviderName(
+      authenticationProviderParams.name
+    ),
     language: userParams.language,
     role: isNewTeam ? UserRole.Admin : undefined,
     avatarUrl: userParams.avatarUrl,
@@ -211,6 +217,7 @@ async function accountProvisioner(
       const count = await Collection.count({
         where: {
           teamId: team.id,
+          ownerId: null,
         },
       });
       provision = count === 0;
@@ -222,44 +229,14 @@ async function accountProvisioner(
   }
 
   // Sync group memberships from the authentication provider if enabled
-  if (authenticationParams.accessToken) {
-    const settings = authenticationProvider.settings;
-
-    if (settings?.groupSyncEnabled) {
-      const syncProvider = PluginManager.getGroupSyncProvider(
-        authenticationProviderParams.name
-      );
-
-      if (syncProvider) {
-        try {
-          const externalGroups = await syncProvider.fetchUserGroups(
-            authenticationParams.accessToken,
-            settings
-          );
-
-          await sequelize.transaction(async (transaction) => {
-            const groupSyncCtx = createContext({
-              user,
-              ip: ctx.context?.ip,
-              transaction,
-            });
-
-            await groupsSyncer(groupSyncCtx, {
-              user,
-              team,
-              authenticationProvider,
-              externalGroups,
-            });
-          });
-        } catch (err) {
-          // Group sync failure should never block login
-          Logger.error("Group sync failed during login", err, {
-            userId: user.id,
-            provider: authenticationProviderParams.name,
-          });
-        }
-      }
-    }
+  if (
+    result.authentication &&
+    authenticationParams.accessToken &&
+    authenticationProvider.settings?.groupSyncEnabled
+  ) {
+    await new SyncUserGroupsTask().schedule({
+      userAuthenticationId: result.authentication.id,
+    });
   }
 
   return {
@@ -270,16 +247,26 @@ async function accountProvisioner(
   };
 }
 
-async function provisionFirstCollection(
+/**
+ * Creates the default "Welcome" collection and onboarding documents for a
+ * newly created team.
+ *
+ * @param ctx the request context.
+ * @param team the team to provision the collection for.
+ * @param user the user that will be recorded as the creator.
+ * @returns a promise that resolves when the collection has been created.
+ */
+export async function provisionFirstCollection(
   ctx: APIContext,
   team: Team,
   user: User
 ) {
   await sequelize.transaction(async (transaction) => {
     const context = createContext({
-      ...ctx,
-      transaction,
       user,
+      authType: ctx.context.auth?.type,
+      ip: ctx.context.ip,
+      transaction,
     });
 
     const collection = await Collection.createWithCtx(context, {
