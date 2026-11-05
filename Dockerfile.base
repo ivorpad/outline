@@ -1,5 +1,5 @@
 ARG APP_PATH=/opt/outline
-FROM node:24.16.0 AS deps
+FROM node:24.22.2-bookworm@sha256:994ed664b2644b1b186516daaa1fb7aa93a1e717da2a0ff17094c765d5dbfde1 AS deps
 
 ARG APP_PATH
 WORKDIR $APP_PATH
