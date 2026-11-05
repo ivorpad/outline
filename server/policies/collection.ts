@@ -310,7 +310,14 @@ allow(User, "export", Collection, (user, collection) =>
 );
 
 allow(User, ["hide", "unhide"], Collection, (user, collection) =>
-  and(!!collection, !!collection?.isActive, isTeamAdmin(user, collection))
+  and(
+    !!collection,
+    !!collection?.isActive,
+    // A personal collection is only visible to its owner, so there is
+    // nothing for an admin to hide.
+    !collection?.isPersonal,
+    isTeamAdmin(user, collection)
+  )
 );
 
 allow(User, "delete", Collection, (user, collection) =>
